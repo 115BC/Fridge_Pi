@@ -183,7 +183,7 @@ def ensure_unclaimed_user() -> dict:
 
 
 async def new_item(name: str, category: str, quantity: int, expire_at: str,
-                   fridge_id: str, user_id: int, actor: str) -> dict:
+                   fridge_id: str, user_id: int, actor: str, status: str = "active") -> dict:
     if not name.strip():
         raise HTTPException(400, "物品名不能为空")
     try:
@@ -193,9 +193,9 @@ async def new_item(name: str, category: str, quantity: int, expire_at: str,
     code = gen_code()
     c = db.conn()
     cur = c.execute(
-        "INSERT INTO items(code,user_id,fridge_id,name,category,quantity,expire_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (code, user_id, fridge_id, name.strip(), category, quantity, expire_at))
+        "INSERT INTO items(code,user_id,fridge_id,name,category,quantity,expire_at,status) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (code, user_id, fridge_id, name.strip(), category, quantity, expire_at, status))
     item_id = cur.lastrowid
     db.log_event("item_add", actor, f"{code} {name} 到期{expire_at}")
     print_status = "disabled"          # 未配置方案B本机派 API
@@ -225,15 +225,18 @@ async def claim_item(code: str, user: dict = Depends(me_dep)):
     row = db.conn().execute("SELECT * FROM items WHERE code=?", (code.strip(),)).fetchone()
     if not row:
         raise HTTPException(404, "标签编码不存在")
-    if row["status"] != "active":
-        raise HTTPException(400, "物品不在库，无法认领")
+    if row["status"] in ("taken_out", "removed"):
+        raise HTTPException(400, "物品已归档，无法认领")
     un = ensure_unclaimed_user()
     if row["user_id"] == user["id"]:
-        return {"ok": True, "msg": "已是你的物品"}
+        return {"ok": True, "msg": "已是你的物品", "item_id": row["id"], "name": row["name"]}
     if row["user_id"] != un["id"]:
-        raise HTTPException(400, "该物品已被他人认领")
-    db.conn().execute("UPDATE items SET user_id=? WHERE id=?", (user["id"], row["id"]))
-    db.log_event("item_claim", user["openid"], f"{row['code']} {row['name']}")
+        owner = db.conn().execute("SELECT name FROM users WHERE id=?", (row["user_id"],)).fetchone()
+        raise HTTPException(400, f"该物品已有主人（{owner['name'] if owner else '他人'}）")
+    enforce_quota(user["id"], user["role"])
+    db.conn().execute("UPDATE items SET user_id=?, status='active' WHERE id=?",
+                      (user["id"], row["id"]))
+    db.log_event("item_claim", user["openid"], f"{row['code']} {row['name']} 认领入个人台账")
     return {"ok": True, "item_id": row["id"], "name": row["name"]}
 
 
@@ -678,9 +681,18 @@ async def kiosk_create_item(req: KioskItemReq, _: None = Depends(_pi_auth)):
     if not user:
         raise HTTPException(400, "请先在屏幕上扫码登录后再登记")
     role_row = db.conn().execute("SELECT role FROM users WHERE id=?", (user["id"],)).fetchone()
-    enforce_quota(user["id"], role_row["role"] if role_row else "student")
-    d = await new_item(req.name, req.category, req.quantity, req.expire_at,
-                       req.fridge_id, user["id"], f"kiosk:{user['name']}")
+    role = role_row["role"] if role_row else "student"
+    if role in ("manager", "admin"):
+        # 宿管/超管登记的多为无主物品：挂"未认领"名下，直接进待认领区，等学生扫码认领
+        owner = ensure_unclaimed_user()
+        d = await new_item(req.name, req.category, req.quantity, req.expire_at,
+                           req.fridge_id, owner["id"], f"kiosk-mgr:{user['name']}",
+                           status="pending_claim")
+        d["status"] = "pending_claim"
+    else:
+        enforce_quota(user["id"], role)
+        d = await new_item(req.name, req.category, req.quantity, req.expire_at,
+                           req.fridge_id, user["id"], f"kiosk:{user['name']}")
     ts = int(time.time())
     token = sign_unlock(d["code"], ts, PI_SECRET)
     db.conn().execute(

@@ -79,6 +79,19 @@ r2 = c.post(B + "/api/v1/kiosk/items", json={"name": "苹果",
        "category": "水果", "login_ticket": t}, headers=PS).json()
 code_b, item_b = r2["code"], r2["item_id"]
 
+# 2.5 宿管触控屏登记 -> 待认领区 -> 学生扫码认领（一人一主）
+t2 = c.post(B + "/api/v1/kiosk/login/start", json={}, headers=PS).json()["ticket"]
+c.post(B + "/api/v1/kiosk/login/confirm", json={"ticket": t2}, headers=H(mgr["token"]))
+r5 = c.post(B + "/api/v1/kiosk/items", json={"name": "无主牛奶", "expire_at": _soon,
+          "category": "奶制品", "login_ticket": t2}, headers=PS).json()
+check("宿管登记自动进待认领区", r5.get("status") == "pending_claim", str(r5))
+cl = c.post(B + f"/api/v1/items/{r5['code']}/claim", json={}, headers=H(stu["token"])).json()
+check("学生扫码认领成功", cl.get("ok") and cl.get("name") == "无主牛奶", str(cl))
+mine2 = c.get(B + "/api/v1/items/mine", headers=H(stu["token"])).json()["items"]
+check("认领后进入学生台账", any(i["code"] == r5["code"] for i in mine2))
+cl2 = c.post(B + f"/api/v1/items/{r5['code']}/claim", json={}, headers=H(mgr2["token"]))
+check("重复认领被拒 400", cl2.status_code == 400, str(cl2.status_code))
+
 # 3. 拍照盘点：合成照片（2个真实标签 + 1个台账没有的码）
 img = Image.new("RGB", (900, 300), "white")
 for i, code in enumerate([code_a, code_b, "FAKE0001"]):

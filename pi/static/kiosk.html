@@ -353,8 +353,9 @@ document.getElementById("saveBtn").onclick = async () => {
     const d = await post("/api/register_item", { name, category: state.category,
       expire_at: expire, quantity: 1, login_ticket: loginTicket });
     document.getElementById("name").value = "";
+    const extra = d.status === "pending_claim" ? "（物品已入待认领区，学生可扫码认领）" : "";
     await waitUnlock(d.code, "storeMsg",
-      `标签 ${d.code} 已打印 · 已开锁，请放入物品并贴好标签（约 60 秒后自动上锁）`, sentAt);
+      `标签 ${d.code} 已打印 · 已开锁，请放入物品并贴好标签${extra}（约 60 秒后自动上锁）`, sentAt);
     session = null; loginTicket = "";   // 登记完成立即登出，防止下一人冒用身份
     setTimeout(goHome, 8000);
   } catch (e) { setMsg("storeMsg", "登记失败：" + e.message, false); }

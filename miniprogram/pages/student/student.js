@@ -99,6 +99,22 @@ Page({
   hideQr() { this.setData({ qrShow: false, qr: null }) },
   noop() {},
 
+  // 扫码认领：把触控屏登记/宿管代登的无主物品领到自己名下（一人一主）
+  scanClaim() {
+    this.askSub()
+    wx.scanCode({
+      success: res => {
+        const code = (res.result || '').trim()
+        if (!code) return
+        api.post(`/api/v1/items/${encodeURIComponent(code)}/claim`, {}).then(d => {
+          wx.showToast({ title: '已认领：' + d.name, icon: 'success' })
+          this.loadMine()
+        }).catch(err => wx.showToast({ title: '认领失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      },
+      fail: () => {}
+    })
+  },
+
   // 自我管理：取出登记 + 改名（到期日仅宿管可改）
   markTaken(e) {
     const { id, name } = e.currentTarget.dataset
