@@ -479,6 +479,28 @@ async def register_item(req: RegisterItemReq):
     return r.json()
 
 
+class TakeoutConfirmReq(BaseModel):
+    code: str
+    taken: bool
+
+
+@app.post("/api/takeout_confirm")
+async def takeout_confirm(req: TakeoutConfirmReq):
+    """取出确认页：已取出(归档) / 继续存放(台账不动)。"""
+    base = _backend_url()
+    async with httpx.AsyncClient(timeout=6) as client:
+        r = await client.post(f"{base}/api/v1/kiosk/takeout-done",
+                              json={"code": req.code, "taken": req.taken},
+                              headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    if r.status_code != 200:
+        try:
+            detail = r.json().get("detail") or f"HTTP {r.status_code}"
+        except Exception:
+            detail = f"HTTP {r.status_code}"
+        raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
+    return r.json()
+
+
 @app.get("/api/last_unlock")
 def read_last_unlock():
     return last_unlock

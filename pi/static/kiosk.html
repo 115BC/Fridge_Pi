@@ -130,6 +130,19 @@
   <div class="msg" id="takeMsg"></div>
 </div>
 
+<!-- 取出结果确认页（60 秒无操作默认已取出） -->
+<div id="scr-confirm" class="hidden">
+  <div class="card" style="text-align:center;padding:48px 16px;margin-top:40px">
+    <div class="guess" style="font-size:22px">箱门已开过，请确认这件物品：</div>
+    <div id="cfmTitle" style="font-size:30px;font-weight:600;margin:16px 0"></div>
+    <div class="muted" id="cfmCount"></div>
+    <div style="display:flex;gap:16px;margin-top:36px">
+      <button class="big green" style="flex:1" onclick="finishConfirm(true)">已取出</button>
+      <button class="big blue" style="flex:1" onclick="finishConfirm(false)">继续存放</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const IDLE_MS = 90000;   // 无人操作 90 秒后回到待机屏并关闭摄像头
 const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
@@ -141,10 +154,10 @@ let liveOn = false, idleTimer = null;
 /* ---------- 屏幕切换 ---------- */
 function show(name) {
   scr = name;
-  ["standby", "home", "login", "store", "take"].forEach(s =>
+  ["standby", "home", "login", "store", "take", "confirm"].forEach(s =>
     document.getElementById("scr-" + s).classList.toggle("hidden", s !== name));
   if (name !== "login") stopLoginPoll();
-  if (name !== "store" && name !== "take" && liveOn) stopPreview();   // 离开操作屏即释放摄像头
+  if (name !== "store" && name !== "take" && name !== "confirm" && liveOn) stopPreview();   // 离开操作屏即释放摄像头
   poke();
 }
 function goStandby() { session = null; show("standby"); }   // 公共屏幕：闲置即登出
@@ -379,14 +392,17 @@ async function waitUnlock(code, msgId, doneMsg, sentAt) {
 async function unlockByCode(code, msgId, doneMsg, busyGuard) {
   setMsg(msgId, "正在校验并通知冰箱开锁…", true);
   const sentAt = Date.now() / 1000;
+  let name = "";
   try {
-    await post("/api/unlock_code", { code });
+    const d = await post("/api/unlock_code", { code });
+    name = d.name || "";
   } catch (e) {
     setMsg(msgId, "开锁失败：" + e.message, false);
-    busyGuard.v = false; return;
+    busyGuard.v = false; return { done: false };
   }
-  await waitUnlock(code, msgId, doneMsg, sentAt);
+  const done = await waitUnlock(code, msgId, doneMsg, sentAt);
   busyGuard.v = false;
+  return { done, name };
 }
 
 /* ---------- 取出屏 ---------- */
@@ -410,10 +426,11 @@ async function renderMyItems() {
       const b = document.createElement("button");
       b.className = "big grey"; b.style.marginTop = "8px";
       b.textContent = `${it.name} · 到期 ${it.expire_at} · ${it.code}`;
-      b.onclick = () => {
+      b.onclick = async () => {
         if (takeBusy.v) return;
         takeBusy.v = true;
-        unlockByCode(it.code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+        const r = await unlockByCode(it.code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+        if (r.done) showConfirm(it.code, it.name);
       };
       list.appendChild(b);
     });
@@ -439,13 +456,40 @@ document.getElementById("scanBtn").onclick = async () => {
   } catch (e) { setMsg("takeMsg", "扫码失败：" + e.message, false); }
 };
 
-document.getElementById("takeBtn").onclick = () => {
+document.getElementById("takeBtn").onclick = async () => {
   if (takeBusy.v) return;
   const code = document.getElementById("takeCode").value.trim();
   if (!code) return setMsg("takeMsg", "请输入或扫描标签编码", false);
   takeBusy.v = true;
-  unlockByCode(code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+  const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+  if (r.done) showConfirm(code, r.name);
 };
+
+/* ---------- 取出结果确认页：60 秒无操作默认"已取出" ---------- */
+let confirmTimer = null, confirmLeft = 0, confirmCode = "";
+function showConfirm(code, name) {
+  confirmCode = code; confirmLeft = 60;
+  show("confirm");
+  document.getElementById("cfmTitle").textContent = name ? `「${name}」 ${code}` : `编码 ${code}`;
+  tickCfm();
+  clearInterval(confirmTimer);
+  confirmTimer = setInterval(() => {
+    confirmLeft--; tickCfm();
+    if (confirmLeft <= 0) finishConfirm(true);
+  }, 1000);
+}
+function tickCfm() {
+  document.getElementById("cfmCount").textContent =
+    `本页保持 ${confirmLeft} 秒，超时默认按"已取出"登记`;
+}
+async function finishConfirm(taken) {
+  if (!confirmCode) return;
+  clearInterval(confirmTimer); confirmTimer = null;
+  const code = confirmCode; confirmCode = "";
+  try { await post("/api/takeout_confirm", { code, taken }); } catch (e) {}
+  setMsg("takeMsg", taken ? "已登记取出，台账归档" : "好的，物品继续在库", true);
+  goHome();
+}
 
 /* ---------- 页面离开时释放摄像头，避免占用 ---------- */
 window.addEventListener("pagehide", () => {

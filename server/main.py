@@ -702,6 +702,27 @@ async def kiosk_create_item(req: KioskItemReq, _: None = Depends(_pi_auth)):
     return d
 
 
+class TakeoutDoneReq(BaseModel):
+    code: str
+    taken: bool
+
+
+@app.post("/api/v1/kiosk/takeout-done")
+def kiosk_takeout_done(req: TakeoutDoneReq, _: None = Depends(_pi_auth)):
+    """触控屏取出后的确认页：taken=true 归档为已取出；false 表示继续存放，台账不动。"""
+    row = db.conn().execute("SELECT * FROM items WHERE code=?", (req.code.strip(),)).fetchone()
+    if not row:
+        raise HTTPException(404, "标签编码不存在")
+    if row["status"] not in ("active", "pending_claim"):
+        return {"ok": True, "status": row["status"]}
+    if req.taken:
+        db.conn().execute("UPDATE items SET status='taken_out' WHERE id=?", (row["id"],))
+        db.log_event("kiosk_takeout_done", "kiosk", f"{row['code']} {row['name']} 确认已取出")
+        return {"ok": True, "status": "taken_out"}
+    db.log_event("kiosk_keep_storing", "kiosk", f"{row['code']} {row['name']} 继续存放")
+    return {"ok": True, "status": row["status"]}
+
+
 @app.get("/api/v1/kiosk/my-items")
 def kiosk_my_items(login_ticket: str):
     """屏幕取出屏的「我的物品」列表（凭已确认的登录 ticket）。"""

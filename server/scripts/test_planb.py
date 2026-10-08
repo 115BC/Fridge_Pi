@@ -91,6 +91,10 @@ mine2 = c.get(B + "/api/v1/items/mine", headers=H(stu["token"])).json()["items"]
 check("认领后进入学生台账", any(i["code"] == r5["code"] for i in mine2))
 cl2 = c.post(B + f"/api/v1/items/{r5['code']}/claim", json={}, headers=H(mgr2["token"]))
 check("重复认领被拒 400", cl2.status_code == 400, str(cl2.status_code))
+td = c.post(B + "/api/v1/kiosk/takeout-done", json={"code": r5["code"], "taken": True}, headers=PS).json()
+check("取出确认页-已取出归档", td.get("status") == "taken_out", str(td))
+td2 = c.post(B + "/api/v1/kiosk/takeout-done", json={"code": code_a, "taken": False}, headers=PS).json()
+check("取出确认页-继续存放不改状态", td2.get("status") == "active", str(td2))
 
 # 3. 拍照盘点：合成照片（2个真实标签 + 1个台账没有的码）
 img = Image.new("RGB", (900, 300), "white")
