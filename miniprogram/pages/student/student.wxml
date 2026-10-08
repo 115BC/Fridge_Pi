@@ -19,8 +19,7 @@
 
   <view class="card">
     <view class="card-title">我存放的物品（按紧急度排序）</view>
-    <button class="btn btn-green" bindtap="scanTakeout">扫标签二维码取出</button>
-    <view wx:if="{{items.length === 0}}" class="empty" style="margin-top:16rpx">暂无存放物品</view>
+    <view wx:if="{{items.length === 0}}" class="empty">暂无存放物品</view>
     <view wx:for="{{items}}" wx:key="id" class="item list-item">
       <view class="li-main">
         <view class="li-name">{{item.name}} <text class="badge badge-{{item.color}}">{{item.color_label}}</text></view>
@@ -30,9 +29,6 @@
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="showQr">取物码</view>
         <view class="btn btn-ghost btn-sm act" data-code="{{item.code}}" data-id="{{item.id}}" bindtap="unlockItem">取出开锁</view>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="renameItem">改名</view>
-        <picker mode="date" value="{{item.expire_at}}" data-id="{{item.id}}" bindchange="onExpireChange">
-          <view class="btn btn-ghost btn-sm act">改期</view>
-        </picker>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="markTaken">已取出</view>
       </view>
     </view>

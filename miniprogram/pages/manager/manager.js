@@ -216,6 +216,22 @@ Page({
     }).catch(() => {})
   },
   onUserSearch(e) { this.setData({ uq: e.detail.value }, () => this.loadUsers()) },
+  editQuota(e) {
+    const it = e.currentTarget.dataset.it
+    wx.showModal({
+      title: `「${it.name || it.openid}」在库额度`, editable: true,
+      placeholderText: `当前 ${it.quota || 5} 件，输入新额度(1~50)`,
+      success: r => {
+        if (!r.confirm) return
+        const n = parseInt(r.content)
+        if (!(n >= 1 && n <= 50)) return wx.showToast({ title: '请输入 1~50', icon: 'none' })
+        api.post(`/api/v1/users/${it.id}/quota`, { quota: n }).then(() => {
+          wx.showToast({ title: '已调整额度', icon: 'success' })
+          this.loadUsers()
+        }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      }
+    })
+  },
   onRoleChange(e) {
     const id = e.currentTarget.dataset.id
     const role = ROLE_OPTIONS[e.detail.value]

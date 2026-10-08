@@ -158,6 +158,19 @@ class ItemReq(BaseModel):
 UNCLAIMED_OPENID = "unclaimed"
 
 
+def enforce_quota(user_id: int, role: str):
+    """学生同时在库物品默认最多 5 件，超出需宿管/超管在账号里调额度。"""
+    if role != "student":
+        return
+    c = db.conn()
+    row = c.execute("SELECT quota FROM users WHERE id=?", (user_id,)).fetchone()
+    quota = (row["quota"] if row and row["quota"] else 5)
+    n = c.execute("SELECT COUNT(*) FROM items WHERE user_id=? AND status='active'",
+                  (user_id,)).fetchone()[0]
+    if n >= quota:
+        raise HTTPException(400, f"存放已达上限 {quota} 件，请联系宿管增加额度")
+
+
 def ensure_unclaimed_user() -> dict:
     """触控屏登记时物品先挂在这个系统账号下，学生在小程序认领后转移。"""
     c = db.conn()
@@ -201,6 +214,7 @@ async def new_item(name: str, category: str, quantity: int, expire_at: str,
 # ---------- 学生：补录登记（主入口在触控屏）+ 我的物品 ----------
 @app.post("/api/v1/items")
 async def create_item(req: ItemReq, user: dict = Depends(me_dep)):
+    enforce_quota(user["id"], user["role"])
     return await new_item(req.name, req.category, req.quantity, req.expire_at,
                           req.fridge_id, user["id"], user["openid"])
 
@@ -385,9 +399,9 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
                      f"{row['code']} {row['name']} -> {new_name}")
         return {"ok": True, "name": new_name}
 
-    if req.action == "expire":         # 学生本人（或宿管）：修改到期日
-        if not (is_owner or is_manager):
-            raise HTTPException(403, "只能操作自己的物品")
+    if req.action == "expire":         # 到期日只有宿管/超管能改（学生取出后重新存放即可）
+        if not is_manager:
+            raise HTTPException(403, "到期日仅宿管可修改")
         try:
             new_date = datetime.strptime(req.value[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
@@ -533,6 +547,21 @@ def set_role(user_id: int, req: RoleReq, admin: dict = Depends(admin_dep)):
     return {"ok": True}
 
 
+class QuotaReq(BaseModel):
+    quota: int
+
+
+@app.post("/api/v1/users/{user_id}/quota")
+def set_quota(user_id: int, req: QuotaReq, user: dict = Depends(manager_dep)):
+    if not (1 <= req.quota <= 50):
+        raise HTTPException(400, "额度需在 1~50 件之间")
+    if not db.conn().execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone():
+        raise HTTPException(404, "用户不存在")
+    db.conn().execute("UPDATE users SET quota=? WHERE id=?", (req.quota, user_id))
+    db.log_event("quota_set", user["openid"], f"user#{user_id} -> {req.quota} 件")
+    return {"ok": True, "quota": req.quota}
+
+
 @app.get("/api/v1/debug/pi")
 def debug_pi(_: dict = Depends(admin_dep)):
     nodes = rows("SELECT * FROM pi_nodes ORDER BY last_seen DESC")
@@ -648,6 +677,8 @@ async def kiosk_create_item(req: KioskItemReq, _: None = Depends(_pi_auth)):
     user = _ticket_user(req.login_ticket)
     if not user:
         raise HTTPException(400, "请先在屏幕上扫码登录后再登记")
+    role_row = db.conn().execute("SELECT role FROM users WHERE id=?", (user["id"],)).fetchone()
+    enforce_quota(user["id"], role_row["role"] if role_row else "student")
     d = await new_item(req.name, req.category, req.quantity, req.expire_at,
                        req.fridge_id, user["id"], f"kiosk:{user['name']}")
     ts = int(time.time())

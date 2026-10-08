@@ -78,6 +78,10 @@ def init():
             c.execute("ALTER TABLE items ADD COLUMN volume_ml INTEGER")  # 人工修正体积，NULL=按类别先验
         except sqlite3.OperationalError:
             pass
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN quota INTEGER NOT NULL DEFAULT 5")  # 在库件数上限
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_setting(key: str, default: str = "") -> str:

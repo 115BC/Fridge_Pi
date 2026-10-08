@@ -108,11 +108,14 @@
       <view class="list-item">
         <view class="li-main">
           <view class="li-name">{{item.name || '(未填名)'}} <text class="badge badge-green">{{item.role_label}}</text></view>
-          <view class="muted">房间 {{item.room || '-'}} · {{item.openid}}</view>
+          <view class="muted">房间 {{item.room || '-'}} · 在库额度 {{item.quota || 5}} 件 · {{item.openid}}</view>
         </view>
-        <picker range="{{roleOptions}}" value="{{item.roleIndex}}" data-id="{{item.id}}" bindchange="onRoleChange">
-          <view class="btn btn-ghost btn-sm act">改角色</view>
-        </picker>
+        <view class="col">
+          <view class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="editQuota">额度</view>
+          <picker range="{{roleOptions}}" value="{{item.roleIndex}}" data-id="{{item.id}}" bindchange="onRoleChange">
+            <view class="btn btn-ghost btn-sm act">改角色</view>
+          </picker>
+        </view>
       </view>
     </view>
   </block>

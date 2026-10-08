@@ -105,9 +105,14 @@ r3 = c.post(B + f"/api/v1/items/{item_b}/action", json={"action": "removed", "no
 check("清理留痕", r3.get("status") == "removed")
 
 # 4.5 学生自我管理 + 体积/容量/排序（双角色与新增能力）
+den4 = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "expire", "value": "2026-12-31"},
+              headers=H(stu["token"]))
+check("学生改到期日被拒 403", den4.status_code == 403, str(den4.status_code))
 r4 = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "expire", "value": "2026-12-31"},
-            headers=H(stu["token"])).json()
-check("学生改到期日", r4.get("expire_at") == "2026-12-31", str(r4))
+            headers=H(mgr["token"])).json()
+check("宿管改到期日", r4.get("expire_at") == "2026-12-31", str(r4))
+q404 = c.post(B + "/api/v1/users/999999/quota", json={"quota": 8}, headers=H(mgr["token"]))
+check("额度接口(不存在用户404)", q404.status_code == 404, str(q404.status_code))
 c.post(B + f"/api/v1/items/{item_a}/volume", json={"volume_ml": 2500}, headers=H(mgr["token"]))
 r5 = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "taken"}, headers=H(stu["token"])).json()
 arch = c.get(B + "/api/v1/items?status=archived&sort=volume", headers=H(mgr["token"])).json()

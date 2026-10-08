@@ -191,12 +191,18 @@ async def manual_lock():
 
 
 def decode_qr_codes(image_path: Path) -> list[str]:
-    """识别照片中的标签二维码（物品编码）。"""
+    """识别照片中的标签二维码（物品编码）；原图失手时放大 2x 再扫一遍。"""
     try:
         import cv2
         img = cv2.imread(str(image_path))
-        ok, decoded, _, _ = cv2.QRCodeDetector().detectAndDecodeMulti(img)
-        return [c for c in decoded if c] if ok else []
+        det = cv2.QRCodeDetector()
+        ok, decoded, _, _ = det.detectAndDecodeMulti(img)
+        codes = [c for c in decoded if c] if ok else []
+        if not codes and img is not None:
+            big = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            ok2, decoded2, _, _ = det.detectAndDecodeMulti(big)
+            codes = [c for c in decoded2 if c] if ok2 else []
+        return codes
     except Exception as e:
         print(f"[qr] 解码失败: {e}")
         return []
@@ -278,8 +284,8 @@ async def preview_start():
     if preview_proc is None or preview_proc.poll() is not None:
         preview_proc = subprocess.Popen(
             [camera.vid_bin, "-t", "0", "-n", "--codec", "mjpeg",
-             "--width", "1280", "--height", "960", "--framerate", "12",
-             "--quality", "85", "-o", "-"],
+             "--width", "1920", "--height", "1080", "--framerate", "12",
+             "--quality", "88", "-o", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         await asyncio.sleep(1.0)
         if preview_proc.poll() is not None:

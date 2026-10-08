@@ -82,16 +82,6 @@ Page({
     api.post(`/api/v1/items/${code}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
       .catch(err => wx.showToast({ title: '开锁失败:' + (err.data && err.data.detail || err.statusCode), icon: 'none' }))
   },
-  scanTakeout() {
-    this.askSub()
-    wx.scanCode({
-      success: res => {
-        api.post(`/api/v1/items/${encodeURIComponent(res.result.trim())}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
-          .catch(err => wx.showToast({ title: '扫码取出失败:' + (err.data && err.data.detail || err.statusCode), icon: 'none' }))
-      },
-      fail: () => {}
-    })
-  },
 
   // 取物码：把二维码显示在手机屏幕上，对准冰箱触控屏摄像头扫描开锁
   showQr(e) {
@@ -109,7 +99,7 @@ Page({
   hideQr() { this.setData({ qrShow: false, qr: null }) },
   noop() {},
 
-  // 自我管理：取出登记 + 改名 + 修改到期日
+  // 自我管理：取出登记 + 改名（到期日仅宿管可改）
   markTaken(e) {
     const { id, name } = e.currentTarget.dataset
     wx.showModal({
@@ -119,14 +109,6 @@ Page({
         this.loadMine()
       }).catch(() => wx.showToast({ title: '操作失败', icon: 'none' }))
     })
-  },
-  onExpireChange(e) {
-    const id = e.currentTarget.dataset.id
-    if (!e.detail.value) return
-    api.post(`/api/v1/items/${id}/action`, { action: 'expire', value: e.detail.value }).then(() => {
-      wx.showToast({ title: '已更新到期日', icon: 'success' })
-      this.loadMine()
-    }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
   },
   renameItem(e) {
     const { id, name } = e.currentTarget.dataset
