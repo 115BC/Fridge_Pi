@@ -189,6 +189,13 @@ Page({
   restoreItem(e) {
     this.action(e.currentTarget.dataset.it.id, 'restore')
   },
+  markTaken(e) {
+    const it = e.currentTarget.dataset.it
+    wx.showModal({
+      title: '标记已取出', content: `确认「${it.name}」(${it.owner_name}) 已由本人取走？台账将归档，学生端同步消失。`,
+      success: r => r.confirm && this.action(it.id, 'taken')
+    })
+  },
   onExpireChange(e) {
     const id = e.currentTarget.dataset.id
     if (!e.detail.value) return

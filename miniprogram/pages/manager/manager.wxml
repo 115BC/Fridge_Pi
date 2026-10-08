@@ -91,6 +91,7 @@
           <view class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="editVolume">体积</view>
           <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="remindOne">提醒</view>
           <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act warn" data-it="{{item}}" bindtap="moveClaim">待认领</view>
+          <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="markTaken">已取出</view>
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">归还原位</view>
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act danger" data-it="{{item}}" bindtap="removeItem">清理留痕</view>
           <view wx:if="{{view==='archived'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">恢复在库</view>
