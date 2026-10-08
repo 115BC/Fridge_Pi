@@ -43,16 +43,22 @@ class WeChat:
 
     async def send_remind(self, openid: str, item_name: str, expire_at: str,
                           color_label: str, page: str = "pages/student/student") -> tuple[bool, str]:
-        """发送到期提醒订阅消息。返回 (是否真实发送, 说明)。"""
+        """到期提醒。模板字段：thing1 物品名称 / time2 过保日期 / number3 剩余天数 / thing5 温馨提示。"""
         if self.dev_mode or not self.template_id:
             return False, f"[dev] 应向 {openid} 推送：{item_name} {color_label}（到期 {expire_at}）"
+        from datetime import date, datetime
+        try:
+            exp = datetime.strptime(expire_at[:10], "%Y-%m-%d").date()
+        except ValueError:
+            exp = date.today()
+        days = (exp - date.today()).days
+        tip = f"已超期{-days}天，请尽快取出" if days < 0 else f"{color_label}，请及时取出"
         token = await self.access_token()
-        # 模板字段名需与所选订阅消息模板一致，这里给常见占位，部署时按模板调整
         data = {
             "thing1": {"value": item_name[:20]},
-            "character_string2": {"value": color_label},
-            "date3": {"value": expire_at[:10]},
-            "thing4": {"value": "请及时取出，逾期将移入待认领区"},
+            "time2": {"value": expire_at[:10]},
+            "number3": {"value": str(max(days, 0))},
+            "thing5": {"value": tip[:20]},
         }
         async with httpx.AsyncClient(timeout=8) as cl:
             r = await cl.post(f"{API}/cgi-bin/message/subscribe/send",
