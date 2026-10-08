@@ -26,6 +26,7 @@
         <view class="muted">{{item.category}} · 数量{{item.quantity}} · 约{{item.vol_l}}L · 到期 {{item.expire_at}} · 编码 {{item.code}}</view>
       </view>
       <view class="col">
+        <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="showQr">取物码</view>
         <view class="btn btn-ghost btn-sm act" data-code="{{item.code}}" data-id="{{item.id}}" bindtap="unlockItem">取出开锁</view>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="renameItem">改名</view>
         <picker mode="date" value="{{item.expire_at}}" data-id="{{item.id}}" bindchange="onExpireChange">
@@ -33,6 +34,15 @@
         </picker>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="markTaken">已取出</view>
       </view>
+    </view>
+  </view>
+
+  <view wx:if="{{qrShow}}" class="qrmask" bindtap="hideQr">
+    <view class="qrbox" catchtap="noop">
+      <view class="qrtitle">{{qr.name}} · 取物码</view>
+      <image src="{{qr.img}}" class="qrimg"></image>
+      <view class="qrhint">把手机屏幕上的二维码对准冰箱的摄像头</view>
+      <view class="muted">编码 {{qr.code}} · 点击空白处关闭</view>
     </view>
   </view>
 </view>

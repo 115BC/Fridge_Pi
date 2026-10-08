@@ -7,7 +7,8 @@ Page({
   data: {
     role: '', user: null,
     items: [],
-    unlockTip: '', unlockColor: ''
+    unlockTip: '', unlockColor: '',
+    qrShow: false, qr: null
   },
   onShow() {
     if (!app.guard(['student'])) return
@@ -82,6 +83,21 @@ Page({
       fail: () => {}
     })
   },
+
+  // 取物码：把二维码显示在手机屏幕上，对准冰箱触控屏摄像头扫描开锁
+  showQr(e) {
+    const id = e.currentTarget.dataset.id
+    wx.showLoading({ title: '生成中' })
+    api.get(`/api/v1/items/${id}/qr`).then(d => {
+      wx.hideLoading()
+      this.setData({ qr: {
+        code: d.code, name: d.name,
+        img: 'data:image/png;base64,' + d.png_base64
+      }, qrShow: true })
+    }).catch(() => { wx.hideLoading(); wx.showToast({ title: '生成失败', icon: 'none' }) })
+  },
+  hideQr() { this.setData({ qrShow: false, qr: null }) },
+  noop() {},
 
   // 自我管理：取出登记 + 改名 + 修改到期日
   markTaken(e) {

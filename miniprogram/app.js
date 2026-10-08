@@ -10,7 +10,7 @@ App({
     const role = wx.getStorageSync('role')
     if (!token) { wx.reLaunch({ url: '/pages/login/login' }); return false }
     if (expectRoles && expectRoles.length && expectRoles.indexOf(role) < 0) {
-      const home = { student: '/pages/student/student', manager: '/pages/manager/manager' }[role]
+      const home = { student: '/pages/student/student', manager: '/pages/manager/manager', admin: '/pages/manager/manager' }[role]
       if (home) wx.reLaunch({ url: home })
       return false
     }

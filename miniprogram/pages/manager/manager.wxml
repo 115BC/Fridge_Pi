@@ -2,15 +2,15 @@
   <view class="hd">
     <view>
       <view class="title">存放管理</view>
-      <view class="role">{{user.name || '宿管'}} · 宿管</view>
+      <view class="role">{{user.name || '宿管'}} · {{isAdmin ? '超级管理员' : '宿管'}}</view>
     </view>
     <view class="btn btn-ghost btn-sm" bindtap="logout">退出</view>
   </view>
 
   <view class="tabs">
     <view class="tab {{section==='items'?'on':''}}" data-s="items" bindtap="setSection">物品管理</view>
-    <view class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
-    <view class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
+    <view wx:if="{{isAdmin}}" class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
+    <view wx:if="{{isAdmin}}" class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
   </view>
 
   <block wx:if="{{section==='items'}}">

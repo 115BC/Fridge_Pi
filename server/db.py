@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users(
   name TEXT DEFAULT '',
   room TEXT DEFAULT '',
   phone TEXT DEFAULT '',
-  role TEXT NOT NULL DEFAULT 'student',   -- student | manager
+  role TEXT NOT NULL DEFAULT 'student',   -- student | manager | admin
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS items(
@@ -78,7 +78,6 @@ def init():
             c.execute("ALTER TABLE items ADD COLUMN volume_ml INTEGER")  # 人工修正体积，NULL=按类别先验
         except sqlite3.OperationalError:
             pass
-        c.execute("UPDATE users SET role='manager' WHERE role='admin'")  # 超管已并入宿管
 
 
 def get_setting(key: str, default: str = "") -> str:

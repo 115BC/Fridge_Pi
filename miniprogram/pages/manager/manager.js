@@ -17,8 +17,8 @@ const SORTS = [
   { key: 'volume', label: '占地大小' }
 ]
 
-const ROLE_OPTIONS = ['student', 'manager']
-const ROLE_LABEL = { student: '学生', manager: '宿管' }
+const ROLE_OPTIONS = ['student', 'manager', 'admin']
+const ROLE_LABEL = { student: '学生', manager: '宿管', admin: '超级管理员' }
 const STATUS_LABEL = { taken_out: '已取出登记', removed: '已清理' }
 
 Page({
@@ -27,13 +27,14 @@ Page({
     sorts: SORTS, sort: 'urgency',
     items: [], counts: {}, view: 'active', stock: null, stockBusy: false,
     unlockTip: '', unlockColor: '', cap: null,
-    section: 'items',
+    section: 'items', isAdmin: false,
     users: [], uq: '', roleOptions: ROLE_OPTIONS,
     pi_nodes: [], unlock_commands: [], events: [], reminders: []
   },
   onShow() {
-    if (!app.guard(['manager'])) return
-    this.setData({ role: wx.getStorageSync('role'), user: wx.getStorageSync('user') })
+    if (!app.guard(['manager', 'admin'])) return
+    const role = wx.getStorageSync('role')
+    this.setData({ role, user: wx.getStorageSync('user'), isAdmin: role === 'admin' })
     this.load()
   },
   onPullDownRefresh() {
@@ -43,6 +44,7 @@ Page({
   },
   setSection(e) {
     const s = e.currentTarget.dataset.s
+    if (s !== 'items' && !this.data.isAdmin) return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
     this.setData({ section: s })
     if (s === 'users') this.loadUsers()
     if (s === 'debug') this.loadDebug()

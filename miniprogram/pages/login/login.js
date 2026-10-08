@@ -12,7 +12,7 @@ Page({
   onName(e) { this.setData({ name: e.detail.value }) },
   onRoom(e) { this.setData({ room: e.detail.value }) },
   goto(role) {
-    const home = { student: '/pages/student/student', manager: '/pages/manager/manager' }[role]
+    const home = { student: '/pages/student/student', manager: '/pages/manager/manager', admin: '/pages/manager/manager' }[role]
     wx.reLaunch({ url: home || '/pages/student/student' })
   },
   // 第一步：纯微信登录；服务器发现未绑定会回 NEED_BIND，转入绑定表单

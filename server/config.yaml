@@ -30,4 +30,5 @@ paths:
   photo_dir: ""                 # 盘点/提醒照片目录，留空=data/photos（小程序经 /photos/{name} 查看）
 
 bootstrap:
-  manager_openids: []            # 首次部署：填入宿管 openid（登录一次即自动成为宿管），完成后清空。开发模式下 openid 形如 dev_xxx（旧字段名 admin_openids 仍兼容）
+  admin_openids: []              # 引导超管：列入的 openid 登录自动成为超级管理员，配完清空
+  manager_openids: []            # 引导宿管：同上，升为宿管。开发模式下 openid 形如 dev_xxx（旧字段名 admin_openids 仍兼容）

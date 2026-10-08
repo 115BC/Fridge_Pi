@@ -31,8 +31,8 @@ wx = WeChat(CFG["wechat"]["appid"], CFG["wechat"]["secret"],
 PI_SECRET = CFG["security"]["pi_secret"]
 WARN_DAYS = CFG["rules"]["warn_days"]
 UNLOCK_TTL = CFG["rules"]["unlock_valid_seconds"]
-MANAGER_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("manager_openids")
-                                or CFG["bootstrap"].get("admin_openids") or [])
+ADMIN_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("admin_openids") or [])
+MANAGER_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("manager_openids") or [])
 DEV_LOGIN = bool(CFG["wechat"].get("dev_login"))   # 仅内网调试：code 带 "dev:" 前缀时跳过微信验证
 AUTO = CFG["rules"].get("auto_remind", {})
 STOCK_KEEP_DAYS = CFG["rules"].get("stocktake_keep_days", 7)
@@ -76,7 +76,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
 me_dep = auth.user
-manager_dep = auth.require_role("manager")     # 宿管即最高权限（超管已合并）
+manager_dep = auth.require_role("manager", "admin")   # 物品域：宿管+超管
+admin_dep = auth.require_role("admin")                # 用户/日志/角色：仅超管
 
 
 # ---------- 工具 ----------
@@ -112,8 +113,12 @@ async def login(req: LoginReq):
     if not bound and not (name and room):
         raise HTTPException(400, "NEED_BIND:请填写姓名和房间号")
     if row:
-        stored = "manager" if row["role"] == "admin" else row["role"]   # 旧超管并入宿管
-        role = "manager" if openid in MANAGER_BOOTSTRAP_OPENIDS else stored
+        if openid in ADMIN_BOOTSTRAP_OPENIDS:
+            role = "admin"
+        elif openid in MANAGER_BOOTSTRAP_OPENIDS and row["role"] == "student":
+            role = "manager"
+        else:
+            role = row["role"]
         sets, args = [], []
         for field, val in [("name", name), ("room", room), ("phone", req.phone)]:
             if val:
@@ -125,7 +130,8 @@ async def login(req: LoginReq):
             c.execute(f"UPDATE users SET {','.join(sets)} WHERE openid=?", args)
         user = dict(c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone())
     else:
-        role = "manager" if openid in MANAGER_BOOTSTRAP_OPENIDS else "student"
+        role = "admin" if openid in ADMIN_BOOTSTRAP_OPENIDS else (
+            "manager" if openid in MANAGER_BOOTSTRAP_OPENIDS else "student")
         cur = c.execute("INSERT INTO users(openid,name,room,phone,role) VALUES(?,?,?,?,?)",
                         (openid, name, room, req.phone, role))
         user = dict(c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -255,6 +261,25 @@ def request_unlock(code: str, user: dict = Depends(me_dep)):
     return {"ok": True, "item_id": row["id"], "code": row["code"]}
 
 
+@app.get("/api/v1/items/{item_id}/qr")
+def item_qr(item_id: int, user: dict = Depends(me_dep)):
+    """学生手机屏幕出示物品二维码，对准冰箱触控屏摄像头即可取出。"""
+    row = db.conn().execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "物品不存在")
+    if user["role"] == "student" and row["user_id"] != user["id"]:
+        raise HTTPException(403, "只能出示自己的物品")
+    import io
+    import base64
+    from qrcode import QRCode
+    q = QRCode(box_size=10, border=2)
+    q.add_data(row["code"])
+    buf = io.BytesIO()
+    q.make_image(fill_color="black", back_color="white").save(buf, "PNG")
+    return {"code": row["code"], "name": row["name"],
+            "png_base64": base64.b64encode(buf.getvalue()).decode()}
+
+
 # ---------- 宿管：全部存放 + 手动提醒 ----------
 @app.get("/api/v1/items")
 def all_items(color: Optional[str] = Query(None), status: str = "active",
@@ -337,7 +362,7 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
     row = c.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
     if not row:
         raise HTTPException(404, "物品不存在")
-    is_manager = user["role"] == "manager"
+    is_manager = user["role"] in ("manager", "admin")
     is_owner = row["user_id"] == user["id"]
 
     if req.action == "taken":          # 学生本人（或宿管代操作）：取出登记
@@ -481,9 +506,9 @@ async def stocktake(file: UploadFile = File(...), fridge_id: str = Form(""),
             "unknown_codes": sorted(unknown)}
 
 
-# ---------- 宿管：账号 + 系统调试（原超管能力并入）----------
+# ---------- 超管：账号 + 系统调试（宿管无权访问）----------
 @app.get("/api/v1/users")
-def list_users(q: Optional[str] = Query(None), _: dict = Depends(manager_dep)):
+def list_users(q: Optional[str] = Query(None), _: dict = Depends(admin_dep)):
     if q:
         like = f"%{q}%"
         return {"users": rows("SELECT * FROM users WHERE name LIKE ? OR room LIKE ? "
@@ -496,25 +521,27 @@ class RoleReq(BaseModel):
 
 
 @app.post("/api/v1/users/{user_id}/role")
-def set_role(user_id: int, req: RoleReq, user: dict = Depends(manager_dep)):
-    if req.role not in ("student", "manager"):
+def set_role(user_id: int, req: RoleReq, admin: dict = Depends(admin_dep)):
+    if req.role not in ("student", "manager", "admin"):
         raise HTTPException(400, "非法角色")
-    if user_id == user["id"] and req.role != "manager":
-        raise HTTPException(400, "不能摘下自己的宿管身份（否则将无人可管理）")
+    if user_id == admin["id"]:
+        raise HTTPException(400, "不能修改自己的角色（防止自锁）")
+    if not db.conn().execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone():
+        raise HTTPException(404, "用户不存在")
     db.conn().execute("UPDATE users SET role=? WHERE id=?", (req.role, user_id))
-    db.log_event("role_change", user["openid"], f"user#{user_id} -> {req.role}")
+    db.log_event("role_change", admin["openid"], f"user#{user_id} -> {req.role}")
     return {"ok": True}
 
 
 @app.get("/api/v1/debug/pi")
-def debug_pi(_: dict = Depends(manager_dep)):
+def debug_pi(_: dict = Depends(admin_dep)):
     nodes = rows("SELECT * FROM pi_nodes ORDER BY last_seen DESC")
     cmds = rows("SELECT * FROM unlock_commands ORDER BY id DESC LIMIT 50")
     return {"pi_nodes": nodes, "unlock_commands": cmds}
 
 
 @app.get("/api/v1/debug/events")
-def debug_events(limit: int = 50, _: dict = Depends(manager_dep)):
+def debug_events(limit: int = 50, _: dict = Depends(admin_dep)):
     return {"events": rows("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)),
             "reminders": rows("SELECT r.*, i.name AS item_name FROM reminders r "
                               "LEFT JOIN items i ON i.id=r.item_id ORDER BY r.id DESC LIMIT 30")}
