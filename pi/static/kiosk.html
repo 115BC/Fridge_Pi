@@ -19,7 +19,7 @@
   .topbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
   .topbar .sp { flex: 1; }
   .topbar button { font-size: 15px; padding: 8px 14px; }
-  #live { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
+  #live, #live2 { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
           background: #111; display: none; }
   #photo { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
            background: #eee; display: none; margin-top: 8px; }
@@ -122,6 +122,7 @@
     <div id="myList"></div>
   </div>
   <div class="card">
+    <img id="live2" alt="实时取景">
     <input id="takeCode" placeholder="输入标签编码（8 位，如 A1B2C3D4）" maxlength="12">
     <button id="scanBtn" class="big grey">把物品放到摄像头前，扫标签取码</button>
     <button id="takeBtn" class="big green" style="margin-top:10px">开锁取出</button>
@@ -143,7 +144,7 @@ function show(name) {
   ["standby", "home", "login", "store", "take"].forEach(s =>
     document.getElementById("scr-" + s).classList.toggle("hidden", s !== name));
   if (name !== "login") stopLoginPoll();
-  if (name !== "store" && liveOn) stopPreview();   // 离开存入屏即释放摄像头
+  if (name !== "store" && name !== "take" && liveOn) stopPreview();   // 离开操作屏即释放摄像头
   poke();
 }
 function goStandby() { session = null; show("standby"); }   // 公共屏幕：闲置即登出
@@ -183,11 +184,13 @@ async function post(url, body) {
 
 /* ---------- 实时预览 ---------- */
 const live = document.getElementById("live");
+const live2 = document.getElementById("live2");
 async function startPreview() {
   try {
     await post("/api/preview/start");
-    live.src = "/api/preview/stream?t=" + Date.now();
-    live.style.display = "block";
+    const url = "/api/preview/stream?t=" + Date.now();
+    live.src = url; live2.src = url;
+    live.style.display = "block"; live2.style.display = "block";
     liveOn = true;
     document.getElementById("previewToggle").textContent = "关闭实时预览";
     document.getElementById("previewToggle").style.display = "block";
@@ -198,8 +201,8 @@ async function startPreview() {
 }
 async function stopPreview() {
   try { await post("/api/preview/stop"); } catch (e) {}
-  live.style.display = "none";
-  live.src = "";
+  live.style.display = "none"; live.src = "";
+  live2.style.display = "none"; live2.src = "";
   liveOn = false;
   document.getElementById("previewToggle").textContent = "开启实时预览";
 }
@@ -390,6 +393,7 @@ let takeBusy = { v: false };
 function enterTake() {
   show("take");
   document.getElementById("takeCode").focus();
+  startPreview();   // 实时取景方便对准标签扫码
   renderMyItems();
 }
 
