@@ -31,6 +31,9 @@
   .cats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
   .cats button { background: #eef1f5; color: #333; font-size: 16px; padding: 12px 4px; }
   .cats button.sel { background: #1677ff; color: #fff; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .chips button { background: #fff7e6; border: 1px solid #ffd591; color: #874d00;
+                  font-size: 16px; padding: 8px 14px; border-radius: 999px; }
   .msg { text-align: center; font-size: 16px; margin-top: 8px; min-height: 24px; }
   .hidden { display: none !important; }
 
@@ -97,8 +100,9 @@
     <div class="guess" id="guess"></div>
   </div>
   <div class="card" id="formCard" style="display:none">
-    <input id="name" placeholder="物品名称（如：牛奶、苹果）" maxlength="30">
+    <input id="name" placeholder="物品名称（点下方常用词，或键盘输入）" maxlength="30">
     <div class="cats" id="cats"></div>
+    <div class="chips" id="chips"></div>
     <div class="volhint" id="volHint"></div>
     <input id="expire" type="date">
     <button id="saveBtn" class="big green" style="display:none">确认存入（打印标签并开锁）</button>
@@ -251,6 +255,34 @@ function volHint(cat) {
     `估算体积：约 ${(ml/1000).toFixed(1)} L（按类别推断，宿管可在管理端修正）`;
 }
 
+/* 常用物品名快捷词：屏幕键盘不经过输入法只能敲英文，中文靠点选 */
+const QUICK = {
+  "水果": ["苹果", "香蕉", "橙子", "西瓜", "葡萄", "草莓", "芒果", "火龙果"],
+  "蔬菜": ["西红柿", "黄瓜", "生菜", "西兰花", "胡萝卜", "玉米", "辣椒"],
+  "奶制品": ["牛奶", "酸奶", "奶酪", "黄油", "奶油", "豆浆"],
+  "肉禽": ["鸡胸肉", "猪肉", "牛肉", "香肠", "培根", "卤味"],
+  "水产": ["鱼", "虾", "蟹", "鱿鱼", "贝类"],
+  "饮料": ["可乐", "雪碧", "果汁", "茶饮", "矿泉水", "功能饮料"],
+  "零食熟食": ["披萨", "汉堡", "三明治", "蛋糕", "饼干", "巧克力"],
+  "餐盒剩菜": ["剩饭", "剩菜", "汤", "便当", "打包盒"],
+  "其他": ["药品", "护肤品", "冰镇饮料", "速食", "调味酱"]
+};
+function renderChips(cat) {
+  const chips = document.getElementById("chips");
+  chips.innerHTML = "";
+  (QUICK[cat] || QUICK["其他"]).forEach(w => {
+    const b = document.createElement("button");
+    b.textContent = w;
+    b.onclick = () => {
+      document.getElementById("name").value = w;
+      state.category = cat;
+      renderSel(document.getElementById("cats"), cat);
+      volHint(cat);
+    };
+    chips.appendChild(b);
+  });
+}
+
 function showResult(res) {
   state = { photo: res.photo, qr: res.qr_codes,
             guessCategory: res.guess.category, category: res.guess.category };
@@ -264,11 +296,12 @@ function showResult(res) {
   res.categories.forEach(c => {
     const b = document.createElement("button");
     b.textContent = c;
-    b.onclick = () => { state.category = c; renderSel(cats, c); volHint(c); };
+    b.onclick = () => { state.category = c; renderSel(cats, c); volHint(c); renderChips(c); };
     cats.appendChild(b);
   });
   renderSel(cats, state.category);
   volHint(state.category);
+  renderChips(state.category);
   document.getElementById("formCard").style.display = "block";
   document.getElementById("saveBtn").style.display = "block";
   document.getElementById("name").focus();
