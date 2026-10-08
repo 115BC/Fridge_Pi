@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pyyaml
+pydantic
+httpx
+PyJWT
+python-multipart
+numpy
+opencv-python-headless

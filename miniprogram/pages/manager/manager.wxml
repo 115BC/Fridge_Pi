@@ -1,0 +1,157 @@
+<view class="wrap">
+  <view class="hd">
+    <view>
+      <view class="title">存放管理</view>
+      <view class="role">{{user.name || '宿管'}} · 宿管</view>
+    </view>
+    <view class="btn btn-ghost btn-sm" bindtap="logout">退出</view>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{section==='items'?'on':''}}" data-s="items" bindtap="setSection">物品管理</view>
+    <view class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
+    <view class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
+  </view>
+
+  <block wx:if="{{section==='items'}}">
+    <view class="counts card">
+      <view class="cnt"><text class="badge badge-red">超期</text> {{counts.red || 0}}</view>
+      <view class="cnt"><text class="badge badge-yellow">临期</text> {{counts.yellow || 0}}</view>
+      <view class="cnt"><text class="badge badge-green">正常</text> {{counts.green || 0}}</view>
+    </view>
+
+    <view wx:if="{{cap}}" class="card">
+      <view class="hd">
+        <view class="li-name">冰箱容量（体积为估算）</view>
+        <view class="btn btn-ghost btn-sm" bindtap="editCapacity">修正总容量</view>
+      </view>
+      <view class="muted">已用约 {{cap.used_l}}L / 总 {{cap.capacity_l}}L · 占用 {{cap.util}}% · 在库 {{cap.count}} 件</view>
+    </view>
+
+    <view class="row gap">
+      <button class="btn btn-primary flex1" bindtap="stocktake">拍照盘点</button>
+      <button wx:if="{{view==='active'}}" class="btn btn-green flex1" bindtap="remindBatch">一键提醒(超期+临期)</button>
+    </view>
+    <view wx:if="{{view==='active'}}" class="row gap" style="margin-top:12rpx">
+      <button class="btn btn-ghost flex1" bindtap="scanUnlock">扫标签二维码开锁</button>
+    </view>
+    <view wx:if="{{unlockTip}}" class="unlock unlock-{{unlockColor}}" style="margin-top:12rpx">{{unlockTip}}</view>
+
+    <view class="tabs">
+      <view class="tab {{view==='active'?'on':''}}" data-v="active" bindtap="setView">在库</view>
+      <view class="tab {{view==='pending_claim'?'on':''}}" data-v="pending_claim" bindtap="setView">待认领区</view>
+      <view class="tab {{view==='archived'?'on':''}}" data-v="archived" bindtap="setView">已归档</view>
+    </view>
+
+    <view wx:if="{{view!=='archived'}}" class="tabs">
+      <view wx:for="{{filters}}" wx:key="key"
+            class="tab {{filter === item.key ? 'on' : ''}}"
+            data-k="{{item.key}}" bindtap="setFilter">{{item.label}}</view>
+    </view>
+
+    <view class="tabs">
+      <view class="tab" style="opacity:.6">排序</view>
+      <view wx:for="{{sorts}}" wx:key="key"
+            class="tab {{sort === item.key ? 'on' : ''}}"
+            data-k="{{item.key}}" bindtap="setSort">{{item.label}}</view>
+    </view>
+
+    <view wx:if="{{stock}}" class="card">
+      <view class="hd"><view class="li-name">盘点结果</view>
+        <view class="btn btn-ghost btn-sm" bindtap="closeStock">关闭</view></view>
+      <view class="muted">照片识别 {{stock.total_in_photo_qr}} 个标签 · 命中 {{stock.found.length}} · 台账未见 {{stock.missing.length}} · 无登记标签 {{stock.unknown_codes.length}}</view>
+      <view wx:if="{{stock.missing.length}}" class="sec">未在照片中找到（可能已取走/标签破损）</view>
+      <view wx:for="{{stock.missing}}" wx:key="id" class="li"><text class="badge badge-{{item.color}}">{{item.color_label}}</text> {{item.name}} · {{item.owner_name}} {{item.owner_room}}</view>
+      <view wx:if="{{stock.unknown_codes.length}}" class="sec">有标签但未登记（按规则移入待认领区）</view>
+      <view wx:for="{{stock.unknown_codes}}" wx:key="*this" class="li">标签 {{item}}</view>
+    </view>
+
+    <view class="card">
+      <input class="search" value="{{q}}" bindinput="onSearch" placeholder="搜索物品名 / 姓名 / 房间号" />
+    </view>
+
+    <view wx:if="{{items.length === 0}}" class="empty">
+      {{view==='active' ? '没有匹配的存放物品' : (view==='pending_claim' ? '待认领区为空' : '暂无归档记录')}}
+    </view>
+    <view wx:for="{{items}}" wx:key="id" class="card item">
+      <view class="list-item">
+        <view class="li-main">
+          <view class="li-name">{{item.name}}
+            <text wx:if="{{view==='archived'}}" class="badge badge-yellow">{{item.status_label}}</text>
+            <text wx:else class="badge badge-{{item.color}}">{{item.color_label}}</text>
+          </view>
+          <view class="muted">{{item.owner_name || '未署名'}} · {{item.owner_room || '无房间'}} · {{item.category}}</view>
+          <view class="muted">数量{{item.quantity}} · 约{{item.vol_l}}L{{item.vol_manual ? '（已修正）' : ''}} · 到期 {{item.expire_at}} · 编码 {{item.code}}</view>
+        </view>
+        <view class="col">
+          <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-code="{{item.code}}" data-id="{{item.id}}" bindtap="unlockItem">开锁</view>
+          <picker mode="date" value="{{item.expire_at}}" data-id="{{item.id}}" bindchange="onExpireChange">
+            <view class="btn btn-ghost btn-sm act">改期</view>
+          </picker>
+          <view class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="editVolume">体积</view>
+          <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="remindOne">提醒</view>
+          <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act warn" data-it="{{item}}" bindtap="moveClaim">待认领</view>
+          <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">归还原位</view>
+          <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act danger" data-it="{{item}}" bindtap="removeItem">清理留痕</view>
+          <view wx:if="{{view==='archived'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">恢复在库</view>
+        </view>
+      </view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='users'}}">
+    <view class="card">
+      <input class="search" value="{{uq}}" bindinput="onUserSearch" placeholder="搜索姓名 / 房间 / openid" />
+    </view>
+    <view wx:if="{{users.length === 0}}" class="empty">暂无账号</view>
+    <view wx:for="{{users}}" wx:key="id" class="card item">
+      <view class="list-item">
+        <view class="li-main">
+          <view class="li-name">{{item.name || '(未填名)'}} <text class="badge badge-green">{{item.role_label}}</text></view>
+          <view class="muted">房间 {{item.room || '-'}} · {{item.openid}}</view>
+        </view>
+        <picker range="{{roleOptions}}" value="{{item.roleIndex}}" data-id="{{item.id}}" bindchange="onRoleChange">
+          <view class="btn btn-ghost btn-sm act">改角色</view>
+        </picker>
+      </view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='debug'}}">
+    <view class="card">
+      <view class="card-title">冰箱节点状态</view>
+      <view wx:if="{{pi_nodes.length===0}}" class="empty">暂无心跳，检查树莓派服务与 backend.base_url</view>
+      <view wx:for="{{pi_nodes}}" wx:key="fridge_id" class="kv">
+        <view class="li-name">{{item.fridge_id}}
+          <text class="badge {{item.is_locked?'badge-green':'badge-red'}}">{{item.is_locked?'已落锁':'开锁中'}}</text>
+          <text wx:if="{{item.mock}}" class="badge badge-yellow">模拟</text>
+        </view>
+        <view class="muted">版本 {{item.version || '-'}} · 最后心跳 {{item.last_seen}}</view>
+      </view>
+    </view>
+    <view class="card">
+      <view class="card-title">解锁指令（最近 50）</view>
+      <view wx:if="{{unlock_commands.length===0}}" class="empty">暂无指令</view>
+      <view wx:for="{{unlock_commands}}" wx:key="id" class="kv">
+        <view class="li-name">#{{item.id}} {{item.code}} <text class="badge badge-{{item.status==='unlocked'?'green':(item.status==='rejected'||item.status==='expired'?'red':'yellow')}}">{{item.status}}</text></view>
+        <view class="muted">冰箱 {{item.fridge_id}} · 创建 {{item.created_at}} · 回执 {{item.acked_at || '-'}} {{item.result_reason}}</view>
+      </view>
+    </view>
+    <view class="card">
+      <view class="card-title">提醒推送记录</view>
+      <view wx:if="{{reminders.length===0}}" class="empty">暂无</view>
+      <view wx:for="{{reminders}}" wx:key="id" class="kv">
+        <view class="li-name">{{item.item_name || '物品#'+item.item_id}} <text class="badge badge-{{item.status==='sent'?'green':'yellow'}}">{{item.status}}</text></view>
+        <view class="muted">{{item.created_at}} · {{item.detail}}</view>
+      </view>
+    </view>
+    <view class="card">
+      <view class="card-title">系统事件流水</view>
+      <view wx:if="{{events.length===0}}" class="empty">暂无</view>
+      <view wx:for="{{events}}" wx:key="id" class="kv">
+        <view class="li-name">{{item.type}} <text class="muted">{{item.actor}}</text></view>
+        <view class="muted">{{item.created_at}} · {{item.detail}}</view>
+      </view>
+    </view>
+  </block>
+</view>

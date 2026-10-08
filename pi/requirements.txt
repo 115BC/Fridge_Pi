@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+httpx
+pyyaml
+pydantic
+pillow
+python-multipart
+numpy
+opencv-python-headless
+onnxruntime
+qrcode
+# 树莓派上控制 GPIO 需要（系统自带 python3-gpiozero 也可）：
+gpiozero

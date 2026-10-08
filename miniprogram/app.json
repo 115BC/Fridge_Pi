@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/student/student",
+    "pages/manager/manager"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#1677ff",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "宿舍冰箱管家",
+    "backgroundColor": "#f4f6f8"
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

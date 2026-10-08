@@ -1,0 +1,26 @@
+# 树莓派端配置
+lock:
+  gpio_pin: 17            # BCM 编号，物理引脚 11，接 MOSFET/继电器模块的 IN
+  auto_relock_seconds: 60 # 解锁后超时自动落锁
+  mock: false             # 非树莓派环境（如 Windows 开发调试）设 true；接真实电磁锁时保持 false
+  button_gpio: 27         # 实体开锁按键：BCM27(物理13脚)对GND，按下=开锁(内部上拉)；删掉此行则不启用
+
+camera:
+  mock: false             # 无 libcamera-still 时自动模拟，无需手动开
+
+printer:
+  name: ""                # CUPS 打印机名(lpstat -p 查看)；留空=只生成标签PNG不打印
+
+security:
+  secret: "change-me"     # 与后端约定的签名密钥，务必修改
+  max_token_age_seconds: 120  # 解锁令牌有效期
+
+backend:
+  base_url: "http://127.0.0.1:8001"  # 小程序后端地址，如 https://xxx；留空则只开本地 API
+  fridge_id: "fridge-01"  # 本冰箱编号，轮询拉取解锁指令时使用
+  poll_interval_seconds: 2
+  heartbeat_seconds: 10   # 向后端上报心跳的间隔（供超管查看冰箱在线/锁状态）
+
+server:
+  host: "0.0.0.0"
+  port: 8000

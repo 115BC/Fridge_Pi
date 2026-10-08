@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行时数据（真实台账/数据库/照片/标签，绝不入库）
+server/data/
+pi/data/
+
+# 分类模型体积较大，用脚本重新下载：python pi/scripts/download_model.py
+pi/models/*.onnx
+
+# 微信开发者工具本地私有配置
+miniprogram/project.private.config.json
+
+# 临时截图/调试产物
+.*.png
+*.bak

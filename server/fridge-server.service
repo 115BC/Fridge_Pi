@@ -1,0 +1,14 @@
+[Unit]
+Description=Fridge Server 小程序后端
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/fridge_pi/server
+ExecStart=/usr/bin/python3 /home/pi/fridge_pi/server/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

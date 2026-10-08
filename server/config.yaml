@@ -1,0 +1,33 @@
+# 小程序后端配置
+server:
+  host: "0.0.0.0"
+  port: 8001
+
+wechat:
+  appid: ""              # 小程序 AppID；留空则用开发模式（前端传 mock_openid）
+  secret: ""             # 小程序 AppSecret
+  # 到期提醒订阅消息模板：在小程序后台「订阅消息」选用后填入
+  dev_login: false        # 内网调试用：true 时 code 带 "dev:" 前缀可跳过微信验证；正式环境必须 false
+  remind_template_id: ""
+
+security:
+  jwt_secret: "change-me-jwt"   # 登录令牌签名，务必修改
+  jwt_expire_hours: 72
+  pi_secret: "change-me"        # 与树莓派 config.yaml 的 security.secret 必须一致
+
+rules:
+  warn_days: 2                  # 临期阈值：到期前 N 天变黄
+  unlock_valid_seconds: 120     # 解锁令牌有效期
+  stocktake_keep_days: 7        # 盘点照片保留天数
+  auto_remind:                  # 自动到期提醒（临期+超期 推送到人）
+    enabled: true
+    times: ["08:00", "20:00"]   # 每天固定批次时刻，各触发一次
+
+print:
+  pi_local_api: "http://127.0.0.1:8000"  # 方案B同机直调打印，如 http://127.0.0.1:8000；方案A留空则登记不打印
+
+paths:
+  photo_dir: ""                 # 盘点/提醒照片目录，留空=data/photos（小程序经 /photos/{name} 查看）
+
+bootstrap:
+  manager_openids: []            # 首次部署：填入宿管 openid（登录一次即自动成为宿管），完成后清空。开发模式下 openid 形如 dev_xxx（旧字段名 admin_openids 仍兼容）

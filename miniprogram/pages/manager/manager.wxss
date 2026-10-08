@@ -1,0 +1,12 @@
+.counts { display: flex; justify-content: space-around; }
+.cnt { font-size: 30rpx; font-weight: 600; }
+.batch { margin-bottom: 20rpx; }
+.search { background: #f4f6f8; border-radius: 10rpx; padding: 16rpx; font-size: 28rpx; }
+.item { padding: 24rpx; }
+.row.gap { gap: 16rpx; margin-bottom: 20rpx; }
+.flex1 { flex: 1; }
+.col { display: flex; flex-direction: column; gap: 12rpx; }
+.act.warn { color: #faad14; }
+.act.danger { color: #ff4d4f; }
+.sec { font-size: 26rpx; color: #555; font-weight: 600; margin: 16rpx 0 8rpx; }
+.li { font-size: 26rpx; padding: 8rpx 0; color: #444; }

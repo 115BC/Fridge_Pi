@@ -1,0 +1,23 @@
+<view class="wrap">
+  <view class="logo">宿舍冰箱管家</view>
+  <view class="sub">扫码登记 · 到期提醒 · 拍照识别</view>
+  <view class="card">
+    <block wx:if="{{!needBind}}">
+      <button class="btn btn-primary" loading="{{loading}}" bindtap="doLogin">微信登录</button>
+      <view class="muted tip">首次登录需绑定姓名和房间号（仅一次），之后自动进入。存放与取出均需登录</view>
+    </block>
+    <block wx:else>
+      <view class="card-title">绑定身份信息</view>
+      <view class="muted tip" style="margin-bottom:16rpx">检测到你的微信尚未绑定，请填写（用于冰箱台账归属与到期提醒）</view>
+      <view class="field">
+        <label>姓名 *</label>
+        <input value="{{name}}" bindinput="onName" placeholder="必填，如 张三" />
+      </view>
+      <view class="field">
+        <label>房间号 *</label>
+        <input value="{{room}}" bindinput="onRoom" placeholder="必填，如 2-417" />
+      </view>
+      <button class="btn btn-primary" loading="{{loading}}" bindtap="doBind">确认绑定并进入</button>
+    </block>
+  </view>
+</view>
