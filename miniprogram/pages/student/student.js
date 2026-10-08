@@ -29,6 +29,7 @@ Page({
 
   // 冰箱触控屏扫码登录：屏幕选「存入」出码后，来这里扫码确认身份
   scanLogin() {
+    this.askSub()
     wx.scanCode({
       success: res => {
         const m = (res.result || '').match(/fridge-login:([0-9a-zA-Z]+)/)
@@ -51,6 +52,12 @@ Page({
     })
   },
 
+  // 每次真实点击顺带续订一条提醒额度（用户勾过"总是保持以上选择"后静默通过）
+  askSub() {
+    if (!config.REMIND_TEMPLATE_ID) return
+    wx.requestSubscribeMessage({ tmplIds: [config.REMIND_TEMPLATE_ID], complete() {} })
+  },
+
   pollUnlock(itemId, tries = 0) {
     if (tries === 0) this.setData({ unlockTip: '正在通知冰箱开锁…', unlockColor: 'yellow' })
     if (tries > 20) { this.setData({ unlockTip: '开锁超时，请联系宿管', unlockColor: 'red' }); return }
@@ -70,11 +77,13 @@ Page({
 
   // 取出开锁：凭标签编码发起（主人本人），复用轮询链路
   unlockItem(e) {
+    this.askSub()
     const { code, id } = e.currentTarget.dataset
     api.post(`/api/v1/items/${code}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
       .catch(err => wx.showToast({ title: '开锁失败:' + (err.data && err.data.detail || err.statusCode), icon: 'none' }))
   },
   scanTakeout() {
+    this.askSub()
     wx.scanCode({
       success: res => {
         api.post(`/api/v1/items/${encodeURIComponent(res.result.trim())}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
@@ -86,6 +95,7 @@ Page({
 
   // 取物码：把二维码显示在手机屏幕上，对准冰箱触控屏摄像头扫描开锁
   showQr(e) {
+    this.askSub()
     const id = e.currentTarget.dataset.id
     wx.showLoading({ title: '生成中' })
     api.get(`/api/v1/items/${id}/qr`).then(d => {
@@ -104,7 +114,7 @@ Page({
     const { id, name } = e.currentTarget.dataset
     wx.showModal({
       title: '取出登记', content: `确认「${name}」已取出？台账将归档这条记录。`,
-      success: r => r.confirm && api.post(`/api/v1/items/${id}/action`, { action: 'taken' }).then(() => {
+      success: r => r.confirm && (this.askSub(), api.post(`/api/v1/items/${id}/action`, { action: 'taken' })).then(() => {
         wx.showToast({ title: '已登记取出', icon: 'success' })
         this.loadMine()
       }).catch(() => wx.showToast({ title: '操作失败', icon: 'none' }))
@@ -126,6 +136,7 @@ Page({
         if (!r.confirm) return
         const v = (r.content || '').trim()
         if (!v) return wx.showToast({ title: '名称不能为空', icon: 'none' })
+        this.askSub()
         api.post(`/api/v1/items/${id}/action`, { action: 'rename', value: v }).then(() => {
           wx.showToast({ title: '已改名', icon: 'success' })
           this.loadMine()
