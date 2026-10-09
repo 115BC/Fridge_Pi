@@ -851,7 +851,7 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    return {"ok": True, "build": "cloud-2026-10-09-2"}
 
 
 if __name__ == "__main__":

@@ -1,9 +1,19 @@
 """微信小程序服务端能力：登录换 openid、access_token 缓存、订阅消息推送。"""
+import os
 import time
 import httpx
 
 API = "https://api.weixin.qq.com"
 _token_cache = {"token": "", "exp": 0.0}
+
+
+def _client(timeout: int = 8) -> httpx.AsyncClient:
+    """云托管出口是透明代理(TLS 拦截、自签证书)，命中时走代理并放宽校验；
+    本地/派上无代理环境保持严格校验。"""
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if proxy:
+        return httpx.AsyncClient(timeout=timeout, proxy=proxy, verify=False)
+    return httpx.AsyncClient(timeout=timeout, trust_env=False)
 
 
 class WeChat:
@@ -17,7 +27,7 @@ class WeChat:
         """用 wx.login 的 code 换 openid。开发模式直接把 code 当 openid。"""
         if self.dev_mode:
             return f"dev_{code}"
-        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
+        async with _client(8) as cl:
             r = await cl.get(f"{API}/sns/jscode2session", params={
                 "appid": self.appid, "secret": self.secret,
                 "js_code": code, "grant_type": "authorization_code"})
@@ -31,7 +41,7 @@ class WeChat:
             return ""
         if _token_cache["token"] and time.time() < _token_cache["exp"]:
             return _token_cache["token"]
-        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
+        async with _client(8) as cl:
             r = await cl.get(f"{API}/cgi-bin/token", params={
                 "grant_type": "client_credential",
                 "appid": self.appid, "secret": self.secret})
@@ -60,7 +70,7 @@ class WeChat:
             "number3": {"value": str(max(days, 0))},
             "thing5": {"value": tip[:20]},
         }
-        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
+        async with _client(8) as cl:
             r = await cl.post(f"{API}/cgi-bin/message/subscribe/send",
                               params={"access_token": token},
                               json={"touser": openid, "template_id": self.template_id,
