@@ -17,7 +17,7 @@ class WeChat:
         """用 wx.login 的 code 换 openid。开发模式直接把 code 当 openid。"""
         if self.dev_mode:
             return f"dev_{code}"
-        async with httpx.AsyncClient(timeout=8) as cl:
+        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
             r = await cl.get(f"{API}/sns/jscode2session", params={
                 "appid": self.appid, "secret": self.secret,
                 "js_code": code, "grant_type": "authorization_code"})
@@ -31,7 +31,7 @@ class WeChat:
             return ""
         if _token_cache["token"] and time.time() < _token_cache["exp"]:
             return _token_cache["token"]
-        async with httpx.AsyncClient(timeout=8) as cl:
+        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
             r = await cl.get(f"{API}/cgi-bin/token", params={
                 "grant_type": "client_credential",
                 "appid": self.appid, "secret": self.secret})
@@ -60,7 +60,7 @@ class WeChat:
             "number3": {"value": str(max(days, 0))},
             "thing5": {"value": tip[:20]},
         }
-        async with httpx.AsyncClient(timeout=8) as cl:
+        async with httpx.AsyncClient(timeout=8, trust_env=False) as cl:
             r = await cl.post(f"{API}/cgi-bin/message/subscribe/send",
                               params={"access_token": token},
                               json={"touser": openid, "template_id": self.template_id,
