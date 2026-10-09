@@ -7,12 +7,17 @@ API = "https://api.weixin.qq.com"
 _token_cache = {"token": "", "exp": 0.0}
 
 
+def _on_cloud_run() -> bool:
+    """云托管会注入 COS_*/MYSQL_ADDRESS 等特征变量；其微信 API 内网直连用私有 CA。"""
+    return bool(os.environ.get("COS_BUCKET") or os.environ.get("MYSQL_ADDRESS")
+                or os.environ.get("TENCENT_CLOUD_RUN"))
+
+
 def _client(timeout: int = 8) -> httpx.AsyncClient:
-    """云托管出口是透明代理(TLS 拦截、自签证书)，命中时走代理并放宽校验；
-    本地/派上无代理环境保持严格校验。"""
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if proxy:
-        return httpx.AsyncClient(timeout=timeout, proxy=proxy, verify=False)
+    """云托管内 api.weixin.qq.com 走内网直连(私有CA自签证书)，命中时放宽 TLS 校验；
+    本地/树莓派等普通环境保持严格校验。"""
+    if _on_cloud_run():
+        return httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False)
     return httpx.AsyncClient(timeout=timeout, trust_env=False)
 
 

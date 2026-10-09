@@ -851,7 +851,18 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "cloud-2026-10-09-2"}
+    return {"ok": True, "build": "cloud-2026-10-09-3"}
+
+
+@app.get("/api/v1/admin/env-probe")
+def env_probe(x_pi_secret: Optional[str] = Header(None)):
+    """临时诊断：确认云托管出口代理/CA 环境（仅 Pi 密钥可用）。"""
+    check_pi_secret(x_pi_secret, PI_SECRET)
+    import ssl
+    keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy",
+            "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
+    return {"env": {k: os.environ.get(k) for k in keys if os.environ.get(k)},
+            "default_ca_paths": ssl.get_default_verify_paths()._asdict()}
 
 
 if __name__ == "__main__":
