@@ -1,7 +1,10 @@
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "fridge.db"
+DATA_DIR = Path(os.environ.get("FRIDGE_DATA_DIR") or
+                (Path(__file__).resolve().parent / "data"))
+DB_PATH = DATA_DIR / "fridge.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(

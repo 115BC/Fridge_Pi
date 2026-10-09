@@ -11,6 +11,8 @@ import httpx
 import yaml
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.requests import Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,6 +27,18 @@ from wechat import WeChat
 BASE = Path(__file__).resolve().parent
 CFG = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
 
+# 云托管部署：敏感配置用环境变量注入，覆盖 config.yaml
+for _sec, _key, _env in [("security", "jwt_secret", "JWT_SECRET"),
+                         ("security", "pi_secret", "PI_SECRET"),
+                         ("wechat", "appid", "WX_APPID"),
+                         ("wechat", "secret", "WX_SECRET"),
+                         ("wechat", "remind_template_id", "WX_TEMPLATE_ID")]:
+    if os.environ.get(_env):
+        CFG[_sec][_key] = os.environ[_env]
+if os.environ.get("PRINT_PI_LOCAL") is not None:
+    CFG["print"]["pi_local_api"] = os.environ["PRINT_PI_LOCAL"]
+ALLOW_DB_TRANSFER = bool(os.environ.get("ALLOW_DB_TRANSFER"))
+
 auth = Auth(CFG["security"]["jwt_secret"])
 wx = WeChat(CFG["wechat"]["appid"], CFG["wechat"]["secret"],
             CFG["wechat"].get("remind_template_id", ""))
@@ -38,7 +52,7 @@ AUTO = CFG["rules"].get("auto_remind", {})
 STOCK_KEEP_DAYS = CFG["rules"].get("stocktake_keep_days", 7)
 PI_LOCAL = (CFG["print"].get("pi_local_api") or "").rstrip("/")
 DEFAULT_CAPACITY_ML = int(CFG.get("fridge", {}).get("capacity_ml") or 150000)
-PHOTO_DIR = Path(CFG["paths"].get("photo_dir") or (BASE / "data" / "photos"))
+PHOTO_DIR = Path(CFG["paths"].get("photo_dir") or (db.DATA_DIR / "photos"))
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -659,6 +673,35 @@ def login_status(ticket: str):
     u = t["user"]
     return {"status": t["status"],
             "user": {"name": u["name"], "room": u["room"]} if t["status"] == "confirmed" else None}
+
+
+@app.get("/api/v1/admin/export-db")
+def admin_export_db(_: None = Depends(_pi_auth)):
+    """一次性数据迁移：把 SQLite 整库以 base64 导出（仅 ALLOW_DB_TRANSFER=1 时可用）。"""
+    if not ALLOW_DB_TRANSFER:
+        raise HTTPException(403, "迁移通道未开启")
+    import base64
+    return Response(base64.b64encode(db.DB_PATH.read_bytes()).decode(), media_type="text/plain")
+
+
+@app.post("/api/v1/admin/import-db")
+async def admin_import_db(req: Request):
+    """一次性数据迁移：导入导出的整库（导入后需重启服务生效）。"""
+    if not ALLOW_DB_TRANSFER:
+        raise HTTPException(403, "迁移通道未开启")
+    import base64
+    x_pi_secret = req.headers.get("X-Pi-Secret")
+    check_pi_secret(x_pi_secret, PI_SECRET)
+    body = await req.json()
+    raw = base64.b64decode(body.get("db_b64") or "")
+    if raw[:15] != b"SQLite format 3":
+        raise HTTPException(400, "不是合法的 SQLite 文件")
+    for suffix in ("", "-wal", "-shm"):
+        f = Path(str(db.DB_PATH) + suffix)
+        if f.exists():
+            f.unlink()
+    db.DB_PATH.write_bytes(raw)
+    return {"ok": True, "size": len(raw), "note": "请重启服务生效"}
 
 
 class KioskUnlockReq(BaseModel):
