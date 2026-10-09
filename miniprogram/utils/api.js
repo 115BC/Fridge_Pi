@@ -8,7 +8,7 @@ function request(path, method = 'GET', data = {}, needAuth = true) {
     if (needAuth && token) header['Authorization'] = 'Bearer ' + token
     wx.cloud.callContainer({
       config: { env: config.CLOUD_ENV },
-      url: path, method, header, data,
+      path, method, header, data,
       success: res => {
         if (res.statusCode === 401) {
           wx.removeStorageSync('token')
