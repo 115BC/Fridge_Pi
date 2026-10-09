@@ -1,6 +1,9 @@
+const config = require('./config.js')
+
 App({
   globalData: { role: '', user: null },
   onLaunch() {
+    if (wx.cloud) wx.cloud.init({ env: config.CLOUD_ENV, traceUser: true })
     this.globalData.role = wx.getStorageSync('role') || ''
     this.globalData.user = wx.getStorageSync('user') || null
   },

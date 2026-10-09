@@ -108,32 +108,26 @@ Page({
   onSearch(e) { this.setData({ q: e.detail.value }, () => this.load()) },
   logout() { app.logout() },
 
-  // 拍照盘点：选一张照片 -> 上传后端批量识别二维码
+  // 拍照盘点：选图 -> 压缩 -> base64 走云托管通道识别（callContainer 不支持 multipart 上传）
   stocktake() {
     if (this.data.stockBusy) return
     wx.chooseMedia({
       count: 1, mediaType: ['image'], sourceType: ['album', 'camera'],
       success: res => {
+        const src = res.tempFiles[0].tempFilePath
         this.setData({ stockBusy: true })
         wx.showLoading({ title: '识别中' })
-        wx.uploadFile({
-          url: config.BASE_URL + '/api/v1/stocktake',
-          filePath: res.tempFiles[0].tempFilePath,
-          name: 'file',
-          formData: { fridge_id: 'fridge-01' },
-          header: { Authorization: 'Bearer ' + wx.getStorageSync('token') },
-          success: r => {
-            let d = {}
-            try { d = JSON.parse(r.data) } catch (e) {}
-            if (r.statusCode === 200) {
-              this.setData({ stock: d })
-            } else {
-              wx.showToast({ title: '盘点失败:' + (d.detail || r.statusCode), icon: 'none' })
-            }
-          },
-          fail: () => wx.showToast({ title: '上传失败', icon: 'none' }),
-          complete: () => { wx.hideLoading(); this.setData({ stockBusy: false }) }
+        const send = (fp) => wx.getFileSystemManager().readFile({
+          filePath: fp, encoding: 'base64',
+          success: r => api.post('/api/v1/stocktake_b64',
+            { image_b64: r.data, fridge_id: 'fridge-01' }
+          ).then(d => this.setData({ stock: d })
+          ).catch(e => wx.showToast({ title: '盘点失败:' + (e.data && e.data.detail || e.statusCode), icon: 'none' })
+          ).finally(() => { wx.hideLoading(); this.setData({ stockBusy: false }) }),
+          fail: () => { wx.hideLoading(); this.setData({ stockBusy: false }); wx.showToast({ title: '读取图片失败', icon: 'none' }) }
         })
+        wx.compressImage({ src, quality: 45, compressedWidth: 1280,
+          success: cmp => send(cmp.tempFilePath), fail: () => send(src) })
       }
     })
   },

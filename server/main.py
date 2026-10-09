@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 抑制低光QR误检刷屏
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 import colors
 import db
@@ -482,18 +484,7 @@ def set_volume(item_id: int, req: VolumeReq, user: dict = Depends(manager_dep)):
 
 
 # ---------- 宿管：拍照批量盘点 ----------
-@app.post("/api/v1/stocktake")
-async def stocktake(file: UploadFile = File(...), fridge_id: str = Form(""),
-                    user: dict = Depends(manager_dep)):
-    import cv2
-    import numpy as np
-    raw = np.frombuffer(await file.read(), np.uint8)
-    img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-    if img is None:
-        raise HTTPException(400, "图片无法解析")
-    name = f"stocktake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
-    cv2.imwrite(str(PHOTO_DIR / name), img)
-
+def _stocktake_core(img, name: str, fridge_id: str, user: dict) -> dict:
     detector = cv2.QRCodeDetector()
 
     def decode_all(im):
@@ -535,6 +526,41 @@ async def stocktake(file: UploadFile = File(...), fridge_id: str = Form(""),
             "found": [brief(it) for it in found],
             "missing": [brief(it) for it in missing],
             "unknown_codes": sorted(unknown)}
+
+
+@app.post("/api/v1/stocktake")
+async def stocktake(file: UploadFile = File(...), fridge_id: str = Form(""),
+                    user: dict = Depends(manager_dep)):
+    raw = np.frombuffer(await file.read(), np.uint8)
+    img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "图片无法解析")
+    name = f"stocktake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+    cv2.imwrite(str(PHOTO_DIR / name), img)
+    return _stocktake_core(img, name, fridge_id, user)
+
+
+class StocktakeB64Req(BaseModel):
+    image_b64: str
+    fridge_id: str = ""
+
+
+@app.post("/api/v1/stocktake_b64")
+async def stocktake_b64(req: StocktakeB64Req, user: dict = Depends(manager_dep)):
+    """小程序云托管 callContainer 通道：图片走 base64 JSON（不支持 multipart 上传）。"""
+    import base64
+    try:
+        raw = base64.b64decode(req.image_b64)
+    except Exception:
+        raise HTTPException(400, "图片数据无效")
+    if not raw or len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(400, "图片过大或为空")
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "图片无法解析")
+    name = f"stocktake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+    cv2.imwrite(str(PHOTO_DIR / name), img)
+    return _stocktake_core(img, name, req.fridge_id, user)
 
 
 # ---------- 超管：账号 + 系统调试（宿管无权访问）----------
