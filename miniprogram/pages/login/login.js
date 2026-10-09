@@ -27,7 +27,7 @@ Page({
             if (e.data && e.data.detail && e.data.detail.indexOf('NEED_BIND') === 0) {
               this.setData({ needBind: true })
             } else {
-              wx.showToast({ title: '登录失败:' + (e.data && e.data.detail || e.errMsg), icon: 'none' })
+              wx.showToast({ title: '登录失败:' + (e.data && e.data.detail || e.errMsg || JSON.stringify(e).slice(0, 90)), icon: 'none' })
             }
           })
           .finally(() => this.setData({ loading: false }))
