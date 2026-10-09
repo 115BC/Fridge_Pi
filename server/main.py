@@ -724,7 +724,9 @@ async def admin_import_rows(req: Request):
         c.execute(f"DELETE FROM {t}")
         for r in rs:
             cols = list(r.keys())
-            c.execute(f"INSERT INTO {t}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+            # 反引号包裹列名：key 等 MySQL 保留字需要，SQLite 也接受反引号
+            col_sql = ",".join(f"`{k}`" for k in cols)
+            c.execute(f"INSERT INTO {t}({col_sql}) VALUES({','.join('?' * len(cols))})",
                       tuple(r[k] for k in cols))
         counts[t] = len(rs)
     return {"ok": True, "counts": counts}
@@ -889,7 +891,7 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "mysql-2026-10-09-2",
+    return {"ok": True, "build": "mysql-2026-10-09-3",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
