@@ -877,7 +877,7 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "cloud-2026-10-09-3"}
+    return {"ok": True, "build": "cloud-2026-10-09-4"}
 
 
 @app.get("/api/v1/admin/env-probe")

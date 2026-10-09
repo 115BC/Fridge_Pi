@@ -46,7 +46,7 @@ Page({
       success: res => {
         api.post('/api/v1/wx/login', { code: res.code, name, room }, false)
           .then(d => { this.saveAndGo(d) })
-          .catch(e => { wx.showToast({ title: '绑定失败:' + (e.data && e.data.detail || e.errMsg), icon: 'none' }) })
+          .catch(e => { wx.showToast({ title: '绑定失败:' + (e.data && e.data.detail || e.errMsg || JSON.stringify(e).slice(0, 80)), icon: 'none' }) })
           .finally(() => this.setData({ loading: false }))
       },
       fail: () => { this.setData({ loading: false }); wx.showToast({ title: 'wx.login 失败', icon: 'none' }) }
