@@ -17,3 +17,4 @@ miniprogram/project.private.config.json
 # 临时截图/调试产物
 .*.png
 *.bak
+fridge-server-cloud.zip
