@@ -140,18 +140,12 @@ _local = threading.local()
 
 def _mysql_connect():
     import pymysql
-    from pymysql.constants import FIELD_TYPE
-    from pymysql.converters import decoders
 
     host, _, port = os.environ["MYSQL_ADDRESS"].partition(":")
-    conv = dict(decoders)
-    # DATETIME 等列按原样字符串返回，与 SQLite 输出的 JSON 形态一致
-    for t in (FIELD_TYPE.DATETIME, FIELD_TYPE.DATE, FIELD_TYPE.TIMESTAMP, FIELD_TYPE.TIME):
-        conv[t] = lambda b: b.decode() if isinstance(b, (bytes, bytearray)) else b
     kw = dict(host=host, port=int(port or 3306),
               user=os.environ.get("MYSQL_USERNAME") or "root",
               password=os.environ.get("MYSQL_PASSWORD") or "",
-              charset="utf8mb4", autocommit=True, converters=conv,
+              charset="utf8mb4", autocommit=True,
               connect_timeout=8, read_timeout=15, write_timeout=15)
     try:
         return pymysql.connect(database=MYSQL_DB, **kw)
@@ -162,10 +156,19 @@ def _mysql_connect():
         return c
 
 
+def _norm_val(v):
+    # DATETIME 列 pymysql 返回 datetime 对象，统一转字符串与 SQLite 的 JSON 形态一致
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)):
+        return str(v)
+    return v
+
+
 class _MyRow:
     """兼容 sqlite3.Row：既支持 row["col"] 也支持 row[0]，dict(row) 可用。"""
 
     def __init__(self, keys, vals):
+        vals = [_norm_val(v) for v in vals]
         self._keys = keys
         self._vals = vals
         self._map = dict(zip(keys, vals))

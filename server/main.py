@@ -889,7 +889,7 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "mysql-2026-10-09-1",
+    return {"ok": True, "build": "mysql-2026-10-09-2",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
