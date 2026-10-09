@@ -1,10 +1,17 @@
 import os
+import re
 import sqlite3
+import threading
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("FRIDGE_DATA_DIR") or
                 (Path(__file__).resolve().parent / "data"))
 DB_PATH = DATA_DIR / "fridge.db"
+
+# 微信云托管内置 MySQL：控制台开启后注入 MYSQL_ADDRESS 等变量，命中即用 MySQL；
+# 本地/树莓派无这些变量时保持 SQLite。
+USING_MYSQL = bool(os.environ.get("MYSQL_ADDRESS"))
+MYSQL_DB = os.environ.get("MYSQL_DATABASE") or "fridge_pi"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
@@ -64,8 +71,179 @@ CREATE TABLE IF NOT EXISTS settings(
 );
 """
 
+# 与 SQLite 版一一对应；时间列用 DATETIME 保持 NOW() 默认值语义；
+# 不建外键（迁移时按表序插入即可，避免约束顺序问题）。
+SCHEMA_MYSQL = """
+CREATE TABLE IF NOT EXISTS users(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  openid VARCHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(64) DEFAULT '',
+  room VARCHAR(64) DEFAULT '',
+  phone VARCHAR(32) DEFAULT '',
+  role VARCHAR(16) NOT NULL DEFAULT 'student',
+  quota INT NOT NULL DEFAULT 5,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS items(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  code VARCHAR(16) NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  fridge_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  category VARCHAR(64) DEFAULT '',
+  quantity INT DEFAULT 1,
+  expire_at VARCHAR(16) NOT NULL,
+  status VARCHAR(16) DEFAULT 'active',
+  volume_ml INT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS unlock_commands(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  item_id INT NOT NULL,
+  fridge_id VARCHAR(64) NOT NULL,
+  code VARCHAR(16) NOT NULL,
+  ts BIGINT NOT NULL,
+  token VARCHAR(128) NOT NULL,
+  status VARCHAR(16) DEFAULT 'pending',
+  result_reason VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  acked_at DATETIME
+);
+CREATE TABLE IF NOT EXISTS reminders(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  item_id INT, user_id INT, actor_id INT,
+  channel VARCHAR(16) DEFAULT 'subscribe',
+  status VARCHAR(16) DEFAULT 'sent',
+  detail VARCHAR(512) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS pi_nodes(
+  fridge_id VARCHAR(64) PRIMARY KEY,
+  is_locked TINYINT, mock TINYINT, version VARCHAR(32),
+  payload TEXT, last_seen DATETIME
+);
+CREATE TABLE IF NOT EXISTS events(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  type VARCHAR(32), actor VARCHAR(64), detail TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS settings(
+  `key` VARCHAR(64) PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
 
-def conn() -> sqlite3.Connection:
+TABLES = ("users", "items", "unlock_commands", "reminders", "pi_nodes", "events", "settings")
+
+_local = threading.local()
+
+
+def _mysql_connect():
+    import pymysql
+    from pymysql.constants import FIELD_TYPE
+    from pymysql.converters import decoders
+
+    host, _, port = os.environ["MYSQL_ADDRESS"].partition(":")
+    conv = dict(decoders)
+    # DATETIME 等列按原样字符串返回，与 SQLite 输出的 JSON 形态一致
+    for t in (FIELD_TYPE.DATETIME, FIELD_TYPE.DATE, FIELD_TYPE.TIMESTAMP, FIELD_TYPE.TIME):
+        conv[t] = lambda b: b.decode() if isinstance(b, (bytes, bytearray)) else b
+    kw = dict(host=host, port=int(port or 3306),
+              user=os.environ.get("MYSQL_USERNAME") or "root",
+              password=os.environ.get("MYSQL_PASSWORD") or "",
+              charset="utf8mb4", autocommit=True, converters=conv,
+              connect_timeout=8, read_timeout=15, write_timeout=15)
+    try:
+        return pymysql.connect(database=MYSQL_DB, **kw)
+    except Exception:
+        c = pymysql.connect(**kw)
+        c.cursor().execute(f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DB}` CHARACTER SET utf8mb4")
+        c.select_db(MYSQL_DB)
+        return c
+
+
+class _MyRow:
+    """兼容 sqlite3.Row：既支持 row["col"] 也支持 row[0]，dict(row) 可用。"""
+
+    def __init__(self, keys, vals):
+        self._keys = keys
+        self._vals = vals
+        self._map = dict(zip(keys, vals))
+
+    def __getitem__(self, k):
+        return self._vals[k] if isinstance(k, int) else self._map[k]
+
+    def keys(self):
+        return self._keys
+
+    def get(self, k, default=None):
+        return self._map.get(k, default)
+
+    def __contains__(self, k):
+        return k in self._map
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+
+class _MyResult:
+    def __init__(self, cur):
+        self._cur = cur
+        self._keys = [d[0] for d in cur.description] if cur.description else []
+        self.lastrowid = cur.lastrowid
+
+    def fetchone(self):
+        r = self._cur.fetchone()
+        return _MyRow(self._keys, r) if r is not None else None
+
+    def fetchall(self):
+        return [_MyRow(self._keys, r) for r in self._cur.fetchall()]
+
+
+def _to_mysql(sql: str) -> str:
+    sql = sql.replace("datetime('now','localtime')", "NOW()")
+    # key 是 MySQL 保留字，settings 表的语句需反引号
+    sql = sql.replace("settings(key, value)", "settings(`key`, value)")
+    sql = sql.replace("WHERE key=?", "WHERE `key`=?")
+    m = re.search(r"ON CONFLICT\([^)]*\)\s*DO UPDATE\s+SET\s+(.*)", sql, re.S | re.I)
+    if m:
+        sets = re.sub(r"excluded\.(\w+)", r"VALUES(\1)", m.group(1))
+        sql = sql[:m.start()] + "ON DUPLICATE KEY UPDATE " + sets
+    return sql.replace("?", "%s")
+
+
+class _MyConn:
+    """每线程一条 MySQL 连接（uvicorn 线程池复用，避免逐请求建连泄漏）。"""
+
+    def __init__(self):
+        c = getattr(_local, "conn", None)
+        if c is None:
+            c = _mysql_connect()
+            _local.conn = c
+        c.ping(reconnect=True)
+        self._c = c
+
+    def execute(self, sql, args=()):
+        cur = self._c.cursor()
+        if args:
+            cur.execute(_to_mysql(sql), tuple(args))
+        else:
+            cur.execute(_to_mysql(sql))
+        return _MyResult(cur)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def conn():
+    if USING_MYSQL:
+        return _MyConn()
     DB_PATH.parent.mkdir(exist_ok=True)
     c = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)  # 自动提交
     c.row_factory = sqlite3.Row
@@ -75,6 +253,12 @@ def conn() -> sqlite3.Connection:
 
 
 def init():
+    if USING_MYSQL:
+        c = conn()
+        for stmt in SCHEMA_MYSQL.split(";"):
+            if stmt.strip():
+                c.execute(stmt)
+        return
     with conn() as c:
         c.executescript(SCHEMA)
         try:

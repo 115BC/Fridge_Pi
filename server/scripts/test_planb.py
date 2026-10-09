@@ -36,8 +36,10 @@ mgr = login("dev:mgrA", name="王超管", room="值班室")     # 先建账号
 import sqlite3
 from pathlib import Path
 _db = sqlite3.connect(Path(__file__).resolve().parent.parent / "data" / "fridge.db")
-_db.execute("UPDATE users SET role='admin' WHERE openid='dev_mgrA'")
-_db.execute("INSERT OR IGNORE INTO users(openid,name,room,role) VALUES('dev_mgrB','李宿管','值班室2','manager')")
+# 开发登录 openid 形态为 "dev_" + 登录码（如 dev_dev:mgrA），旧写法 dev_mgrA 已不生效
+_db.execute("UPDATE users SET role='admin' WHERE openid IN ('dev_dev:mgrA','dev_mgrA')")
+_db.execute("INSERT OR IGNORE INTO users(openid,name,room,role) VALUES('dev_dev:mgrB','李宿管','值班室2','manager')")
+_db.execute("UPDATE users SET role='manager' WHERE openid='dev_dev:mgrB'")
 _db.commit(); _db.close()
 mgr = login("dev:mgrA", name="王超管", room="值班室")
 mgr2 = login("dev:mgrB", name="李宿管", room="值班室2")

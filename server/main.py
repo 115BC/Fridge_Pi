@@ -701,33 +701,33 @@ def login_status(ticket: str):
             "user": {"name": u["name"], "room": u["room"]} if t["status"] == "confirmed" else None}
 
 
-@app.get("/api/v1/admin/export-db")
-def admin_export_db(_: None = Depends(_pi_auth)):
-    """一次性数据迁移：把 SQLite 整库以 base64 导出（仅 ALLOW_DB_TRANSFER=1 时可用）。"""
+@app.get("/api/v1/admin/export-rows")
+def admin_export_rows(_: None = Depends(_pi_auth)):
+    """一次性数据迁移：逐表导出行数据 JSON（SQLite/MySQL 通用，仅迁移通道开启时可用）。"""
     if not ALLOW_DB_TRANSFER:
         raise HTTPException(403, "迁移通道未开启")
-    import base64
-    return Response(base64.b64encode(db.DB_PATH.read_bytes()).decode(), media_type="text/plain")
+    return {"tables": {t: rows(f"SELECT * FROM {t}") for t in db.TABLES}}
 
 
-@app.post("/api/v1/admin/import-db")
-async def admin_import_db(req: Request):
-    """一次性数据迁移：导入导出的整库（导入后需重启服务生效）。"""
+@app.post("/api/v1/admin/import-rows")
+async def admin_import_rows(req: Request):
+    """一次性数据迁移：清空目标库各表后按行导入（含原主键 id）。"""
     if not ALLOW_DB_TRANSFER:
         raise HTTPException(403, "迁移通道未开启")
-    import base64
-    x_pi_secret = req.headers.get("X-Pi-Secret")
-    check_pi_secret(x_pi_secret, PI_SECRET)
+    check_pi_secret(req.headers.get("X-Pi-Secret"), PI_SECRET)
     body = await req.json()
-    raw = base64.b64decode(body.get("db_b64") or "")
-    if raw[:15] != b"SQLite format 3":
-        raise HTTPException(400, "不是合法的 SQLite 文件")
-    for suffix in ("", "-wal", "-shm"):
-        f = Path(str(db.DB_PATH) + suffix)
-        if f.exists():
-            f.unlink()
-    db.DB_PATH.write_bytes(raw)
-    return {"ok": True, "size": len(raw), "note": "请重启服务生效"}
+    tables = body.get("tables") or {}
+    c = db.conn()
+    counts = {}
+    for t in db.TABLES:
+        rs = tables.get(t) or []
+        c.execute(f"DELETE FROM {t}")
+        for r in rs:
+            cols = list(r.keys())
+            c.execute(f"INSERT INTO {t}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                      tuple(r[k] for k in cols))
+        counts[t] = len(rs)
+    return {"ok": True, "counts": counts}
 
 
 class KioskUnlockReq(BaseModel):
@@ -889,7 +889,8 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "cloud-2026-10-09-4"}
+    return {"ok": True, "build": "mysql-2026-10-09-1",
+            "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
 @app.get("/api/v1/admin/env-probe")

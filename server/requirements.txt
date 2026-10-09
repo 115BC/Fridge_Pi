@@ -8,3 +8,4 @@ python-multipart
 numpy
 opencv-python-headless
 qrcode[pil]
+pymysql
