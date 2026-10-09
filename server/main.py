@@ -802,6 +802,18 @@ def kiosk_my_items(login_ticket: str):
     return {"items": volume.attach(colors.decorate(items, WARN_DAYS)), "user": user}
 
 
+@app.get("/api/v1/admin/storage-probe")
+def storage_probe(_: None = Depends(_pi_auth)):
+    """诊断：/app/data 是否独立挂载（比较设备号 + 读 mounts）。"""
+    import os
+    data_st = os.stat(db.DATA_DIR)
+    root_st = os.stat("/")
+    mounts = [l for l in open("/proc/mounts").read().splitlines()
+              if "data" in l or "nfs" in l or "cpfs" in l or "cfs" in l]
+    return {"data_dir": str(db.DATA_DIR), "same_device_as_root": data_st.st_dev == root_st.st_dev,
+            "db_exists": db.DB_PATH.exists(), "mounts": mounts[:6]}
+
+
 @app.post("/api/v1/kiosk/unlock")
 def kiosk_unlock(req: KioskUnlockReq, _: None = Depends(_pi_auth)):
     """触控屏取出：本机设备即 trusted（面前有人输码/扫标签），复用一次性令牌轮询链路。"""
