@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS buildings(
+  name TEXT PRIMARY KEY,                 -- 楼宇名（学生选择、宿管筛选用）
+  fridge_id TEXT NOT NULL                -- 该楼冰箱=树莓派设备，物品/容量按此归属
+);
 """
 
 # 与 SQLite 版一一对应；时间列用 DATETIME 保持 NOW() 默认值语义；
@@ -131,9 +135,13 @@ CREATE TABLE IF NOT EXISTS settings(
   `key` VARCHAR(64) PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS buildings(
+  name VARCHAR(64) PRIMARY KEY,
+  fridge_id VARCHAR(64) NOT NULL
+);
 """
 
-TABLES = ("users", "items", "unlock_commands", "reminders", "pi_nodes", "events", "settings")
+TABLES = ("users", "buildings", "items", "unlock_commands", "reminders", "pi_nodes", "events", "settings")
 
 _local = threading.local()
 
@@ -261,17 +269,27 @@ def init():
         for stmt in SCHEMA_MYSQL.split(";"):
             if stmt.strip():
                 c.execute(stmt)
-        return
-    with conn() as c:
-        c.executescript(SCHEMA)
         try:
-            c.execute("ALTER TABLE items ADD COLUMN volume_ml INTEGER")  # 人工修正体积，NULL=按类别先验
-        except sqlite3.OperationalError:
+            c.execute("ALTER TABLE users ADD COLUMN building VARCHAR(64) DEFAULT ''")
+        except Exception:
             pass
-        try:
-            c.execute("ALTER TABLE users ADD COLUMN quota INTEGER NOT NULL DEFAULT 5")  # 在库件数上限
-        except sqlite3.OperationalError:
-            pass
+    else:
+        with conn() as c:
+            c.executescript(SCHEMA)
+            try:
+                c.execute("ALTER TABLE items ADD COLUMN volume_ml INTEGER")  # 人工修正体积，NULL=按类别先验
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN quota INTEGER NOT NULL DEFAULT 5")  # 在库件数上限
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN building TEXT DEFAULT ''")  # 所属楼宇，空=待补登记
+            except sqlite3.OperationalError:
+                pass
+    if not conn().execute("SELECT name FROM buildings LIMIT 1").fetchone():
+        conn().execute("INSERT INTO buildings(name, fridge_id) VALUES(?, ?)", ("主楼", "fridge-01"))
 
 
 def get_setting(key: str, default: str = "") -> str:

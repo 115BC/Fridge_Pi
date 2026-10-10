@@ -105,17 +105,71 @@ def gen_code():
     return uuid.uuid4().hex[:8].upper()
 
 
+# ---------- 楼宇（注册选楼 / 宿管筛选 / 超管维护） ----------
+@app.get("/api/v1/buildings")
+def list_buildings():
+    """公开：登录绑定页要选楼（彼时尚无 token）；顺带返回超管联系方式供学生页展示。"""
+    return {"buildings": rows("SELECT * FROM buildings ORDER BY name"),
+            "admin_contact": db.get_setting("admin_contact")}
+
+
+class BuildingReq(BaseModel):
+    name: str
+    fridge_id: str
+
+
+@app.post("/api/v1/admin/buildings")
+def add_building(req: BuildingReq, admin: dict = Depends(admin_dep)):
+    name, fridge = req.name.strip(), req.fridge_id.strip()
+    if not name or not fridge:
+        raise HTTPException(400, "楼宇名和冰箱编号不能为空")
+    if db.conn().execute("SELECT name FROM buildings WHERE name=?", (name,)).fetchone():
+        raise HTTPException(400, "楼宇已存在")
+    db.conn().execute("INSERT INTO buildings(name, fridge_id) VALUES(?, ?)", (name, fridge))
+    db.log_event("building_add", admin["openid"], f"{name} -> {fridge}")
+    return {"ok": True}
+
+
+@app.delete("/api/v1/admin/buildings/{name}")
+def delete_building(name: str, admin: dict = Depends(admin_dep)):
+    if not db.conn().execute("SELECT name FROM buildings WHERE name=?", (name,)).fetchone():
+        raise HTTPException(404, "楼宇不存在")
+    n = db.conn().execute("SELECT COUNT(*) FROM buildings").fetchone()[0]
+    if n <= 1:
+        raise HTTPException(400, "至少保留一栋楼")
+    used = db.conn().execute(
+        "SELECT COUNT(*) FROM users WHERE building=?", (name,)).fetchone()[0]
+    if used:
+        raise HTTPException(400, f"还有 {used} 名学生属于该楼，请先迁移后再删除")
+    db.conn().execute("DELETE FROM buildings WHERE name=?", (name,))
+    db.log_event("building_del", admin["openid"], name)
+    return {"ok": True}
+
+
+class ContactReq(BaseModel):
+    value: str
+
+
+@app.post("/api/v1/admin/contact")
+def set_admin_contact(req: ContactReq, admin: dict = Depends(admin_dep)):
+    db.set_setting("admin_contact", req.value.strip())
+    db.log_event("contact_set", admin["openid"], req.value.strip() or "(清空)")
+    return {"ok": True}
+
+
 # ---------- 登录 / 账号 ----------
 class LoginReq(BaseModel):
     code: str
     name: str = ""
     room: str = ""
     phone: str = ""
+    building: str = ""
 
 
 @app.post("/api/v1/wx/login")
 async def login(req: LoginReq):
     name, room = req.name.strip(), req.room.strip()
+    building = req.building.strip()
     if DEV_LOGIN and req.code.startswith("dev:"):
         openid = "dev_" + req.code[4:]
     else:
@@ -125,9 +179,12 @@ async def login(req: LoginReq):
             raise HTTPException(400, str(e))
     c = db.conn()
     row = c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()
-    bound = bool(row and row["name"] and row["room"])
-    if not bound and not (name and room):
-        raise HTTPException(400, "NEED_BIND:请填写姓名和房间号")
+    if building and not c.execute("SELECT name FROM buildings WHERE name=?", (building,)).fetchone():
+        raise HTTPException(400, "楼宇不存在，请重新选择")
+    # 楼宇首次补选可由学生自己完成（历史账号）；改楼只能超管操作（/users/{id}/building）
+    bound = bool(row and row["name"] and row["room"] and row["building"])
+    if not bound and not (name and room and building):
+        raise HTTPException(400, "NEED_BIND:请填写姓名、房间号并选择楼宇")
     if row:
         if openid in ADMIN_BOOTSTRAP_OPENIDS:
             role = "admin"
@@ -139,6 +196,8 @@ async def login(req: LoginReq):
         for field, val in [("name", name), ("room", room), ("phone", req.phone)]:
             if val:
                 sets.append(f"{field}=?"); args.append(val)
+        if building and not row["building"]:
+            sets.append("building=?"); args.append(building)
         if role != row["role"]:
             sets.append("role=?"); args.append(role)
         if sets:
@@ -148,10 +207,10 @@ async def login(req: LoginReq):
     else:
         role = "admin" if openid in ADMIN_BOOTSTRAP_OPENIDS else (
             "manager" if openid in MANAGER_BOOTSTRAP_OPENIDS else "student")
-        cur = c.execute("INSERT INTO users(openid,name,room,phone,role) VALUES(?,?,?,?,?)",
-                        (openid, name, room, req.phone, role))
+        cur = c.execute("INSERT INTO users(openid,name,room,phone,role,building) VALUES(?,?,?,?,?,?)",
+                        (openid, name, room, req.phone, role, building))
         user = dict(c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone())
-        db.log_event("register", openid, f"role={role} name={name} room={room}")
+        db.log_event("register", openid, f"role={role} name={name} room={room} building={building}")
     token = make_jwt(openid, role, CFG["security"]["jwt_secret"],
                      CFG["security"]["jwt_expire_hours"])
     return {"token": token, "role": role, "user": user}
@@ -160,6 +219,24 @@ async def login(req: LoginReq):
 @app.get("/api/v1/me")
 def me(user: dict = Depends(me_dep)):
     return {"user": user, "role": user["role"]}
+
+
+class ProfileReq(BaseModel):
+    name: str = ""
+    room: str = ""
+
+
+@app.put("/api/v1/me")
+def update_me(req: ProfileReq, user: dict = Depends(me_dep)):
+    """学生自助只能改姓名/寝室号；楼宇错了要联系超管。"""
+    name, room = req.name.strip(), req.room.strip()
+    if not name or not room:
+        raise HTTPException(400, "姓名和寝室号都不能为空")
+    db.conn().execute("UPDATE users SET name=?, room=? WHERE id=?",
+                      (name, room, user["id"]))
+    db.log_event("profile_edit", user["openid"], f"{name} {room}")
+    row = db.conn().execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+    return {"user": dict(row)}
 
 
 # ---------- 物品登记（共用）----------
@@ -228,11 +305,21 @@ async def new_item(name: str, category: str, quantity: int, expire_at: str,
 
 
 # ---------- 学生：补录登记（主入口在触控屏）+ 我的物品 ----------
+def _building_fridge(user: dict, fallback: str) -> str:
+    """学生自助登记走自己楼宇的冰箱；未分楼时沿用请求里的 fridge_id。"""
+    if user.get("building"):
+        row = db.conn().execute("SELECT fridge_id FROM buildings WHERE name=?",
+                                (user["building"],)).fetchone()
+        if row:
+            return row["fridge_id"]
+    return fallback
+
+
 @app.post("/api/v1/items")
 async def create_item(req: ItemReq, user: dict = Depends(me_dep)):
     enforce_quota(user["id"], user["role"])
     return await new_item(req.name, req.category, req.quantity, req.expire_at,
-                          req.fridge_id, user["id"], user["openid"])
+                          _building_fridge(user, req.fridge_id), user["id"], user["openid"])
 
 
 @app.post("/api/v1/items/{code}/claim")
@@ -317,10 +404,14 @@ def item_qr(item_id: int, user: dict = Depends(me_dep)):
 @app.get("/api/v1/items")
 def all_items(color: Optional[str] = Query(None), status: str = "active",
               q: Optional[str] = Query(None), sort: str = "urgency",
+              building: Optional[str] = Query(None),
               _: dict = Depends(manager_dep)):
     where, args = "i.status=?", [status]
     if status == "archived":
         where, args = "i.status IN ('taken_out','removed')", []
+    if building:
+        where += " AND i.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)"
+        args.append(building)
     if q:
         where += " AND (i.name LIKE ? OR u.name LIKE ? OR u.room LIKE ?)"
         like = f"%{q}%"; args += [like, like, like]
@@ -342,17 +433,22 @@ def all_items(color: Optional[str] = Query(None), status: str = "active",
 
 
 async def do_remind(item_ids: list[int] | None = None, colors_want: list[str] | None = None,
-                    actor_id: int | None = None, channel: str = "subscribe") -> dict:
+                    actor_id: int | None = None, channel: str = "subscribe",
+                    building: str = "") -> dict:
     c = db.conn()
+    fridge_sql = (" AND i.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)",
+                  [building]) if building else ("", [])
     if item_ids:
         ph = ",".join("?" * len(item_ids))
         sel = rows(f"SELECT i.*, u.openid AS owner_openid, u.name AS owner_name "
                    f"FROM items i JOIN users u ON u.id=i.user_id "
-                   f"WHERE i.id IN ({ph}) AND i.status='active'", item_ids)
+                   f"WHERE i.id IN ({ph}) AND i.status='active'{fridge_sql[0]}",
+                   (*item_ids, *fridge_sql[1]))
     else:
         want = set(colors_want) or {"red", "yellow"}
         sel = rows("SELECT i.*, u.openid AS owner_openid, u.name AS owner_name "
-                   "FROM items i JOIN users u ON u.id=i.user_id WHERE i.status='active'")
+                   "FROM items i JOIN users u ON u.id=i.user_id "
+                   f"WHERE i.status='active'{fridge_sql[0]}", fridge_sql[1])
         sel = [it for it in sel if colors.color_of(it["expire_at"], WARN_DAYS) in want]
     results = []
     for it in sel:
@@ -371,12 +467,13 @@ async def do_remind(item_ids: list[int] | None = None, colors_want: list[str] | 
 class RemindReq(BaseModel):
     item_ids: list[int] = []
     colors: list[str] = []          # item_ids 为空时，按颜色批量提醒（默认红+黄）
+    building: str = ""              # 只提醒某栋楼（宿管页"提醒本楼"）
 
 
 @app.post("/api/v1/reminders")
 async def send_reminders(req: RemindReq, actor: dict = Depends(manager_dep)):
     d = await do_remind(item_ids=req.item_ids or None, colors_want=req.colors,
-                        actor_id=actor["id"])
+                        actor_id=actor["id"], building=req.building.strip())
     db.log_event("remind", actor["openid"], f"批量提醒 {d['total']} 件")
     return d
 
@@ -442,27 +539,35 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
 
 
 # ---------- 宿管：容量与体积修正 ----------
+def _capacity_key(fridge_id: str) -> str:
+    return f"capacity_ml:{fridge_id}"
+
+
 @app.get("/api/v1/capacity")
-def get_capacity(_: dict = Depends(me_dep)):
+def get_capacity(fridge_id: str = Query("fridge-01"), user: dict = Depends(me_dep)):
     ph = ",".join("?" * len(volume.STOCK_STATUSES))
-    items = rows(f"SELECT * FROM items WHERE status IN ({ph})", volume.STOCK_STATUSES)
+    items = rows(f"SELECT * FROM items WHERE status IN ({ph}) AND fridge_id=?",
+                 (*volume.STOCK_STATUSES, fridge_id))
     used = sum(volume.est_ml(it) for it in items)
-    cap = int(db.get_setting("capacity_ml", str(DEFAULT_CAPACITY_ML)))
+    cap = int(db.get_setting(_capacity_key(fridge_id),
+                             db.get_setting("capacity_ml", str(DEFAULT_CAPACITY_ML))))
     return {"capacity_ml": cap, "used_ml": used, "item_count": len(items),
+            "fridge_id": fridge_id,
             "util_pct": round(used * 100.0 / cap, 1) if cap else 0.0}
 
 
 class CapacityReq(BaseModel):
     capacity_ml: int
+    fridge_id: str = "fridge-01"
 
 
 @app.post("/api/v1/capacity")
 def set_capacity(req: CapacityReq, user: dict = Depends(manager_dep)):
     if not (1000 <= req.capacity_ml <= 2_000_000):
         raise HTTPException(400, "容量需在 1L~2000L 之间")
-    db.set_setting("capacity_ml", req.capacity_ml)
-    db.log_event("capacity_set", user["openid"], f"{req.capacity_ml} mL")
-    return {"ok": True, "capacity_ml": req.capacity_ml}
+    db.set_setting(_capacity_key(req.fridge_id), req.capacity_ml)
+    db.log_event("capacity_set", user["openid"], f"{req.fridge_id} -> {req.capacity_ml} mL")
+    return {"ok": True, "capacity_ml": req.capacity_ml, "fridge_id": req.fridge_id}
 
 
 class VolumeReq(BaseModel):
@@ -563,14 +668,58 @@ async def stocktake_b64(req: StocktakeB64Req, user: dict = Depends(manager_dep))
     return _stocktake_core(img, name, req.fridge_id, user)
 
 
-# ---------- 超管：账号 + 系统调试（宿管无权访问）----------
+# ---------- 账号管理（列表对宿管开放：按楼筛学生、改姓名寝室；角色/改楼/额度仍分权） ----------
 @app.get("/api/v1/users")
-def list_users(q: Optional[str] = Query(None), _: dict = Depends(admin_dep)):
+def list_users(q: Optional[str] = Query(None), building: Optional[str] = Query(None),
+               _: dict = Depends(manager_dep)):
+    sql, args = "SELECT * FROM users WHERE openid<>?", [UNCLAIMED_OPENID]
+    if building:
+        sql += " AND building=?"; args.append(building)
     if q:
-        like = f"%{q}%"
-        return {"users": rows("SELECT * FROM users WHERE name LIKE ? OR room LIKE ? "
-                              "OR openid LIKE ? ORDER BY id", (like, like, like))}
-    return {"users": rows("SELECT * FROM users ORDER BY id")}
+        sql += " AND (name LIKE ? OR room LIKE ?)"
+        like = f"%{q}%"; args += [like, like]
+    return {"users": rows(sql + " ORDER BY id", args)}
+
+
+class UserProfileReq(BaseModel):
+    name: str
+    room: str
+
+
+@app.post("/api/v1/users/{user_id}/profile")
+def set_user_profile(user_id: int, req: UserProfileReq,
+                     mgr: dict = Depends(manager_dep)):
+    """宿管代学生更正姓名/寝室号（改楼不在这里，超管专用）。"""
+    name, room = req.name.strip(), req.room.strip()
+    if not name or not room:
+        raise HTTPException(400, "姓名和寝室号都不能为空")
+    row = db.conn().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    db.conn().execute("UPDATE users SET name=?, room=? WHERE id=?", (name, room, user_id))
+    db.log_event("user_profile_fix", mgr["openid"],
+                 f"user#{user_id} -> {name} {room}")
+    return {"ok": True}
+
+
+class UserBuildingReq(BaseModel):
+    building: str
+
+
+@app.post("/api/v1/users/{user_id}/building")
+def set_user_building(user_id: int, req: UserBuildingReq,
+                      admin: dict = Depends(admin_dep)):
+    """学生注册选错楼的唯一更正通道（联系超管操作）。只改归属，已在库物品留在原冰箱。"""
+    building = req.building.strip()
+    if not db.conn().execute("SELECT name FROM buildings WHERE name=?", (building,)).fetchone():
+        raise HTTPException(400, "楼宇不存在")
+    row = db.conn().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    db.conn().execute("UPDATE users SET building=? WHERE id=?", (building, user_id))
+    db.log_event("user_building_change", admin["openid"],
+                 f"user#{user_id} {row['name']} {row['building'] or '(未分楼)'} -> {building}")
+    return {"ok": True}
 
 
 class RoleReq(BaseModel):
@@ -891,7 +1040,7 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "mysql-2026-10-09-3",
+    return {"ok": True, "build": "building-2026-10-10-1",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
