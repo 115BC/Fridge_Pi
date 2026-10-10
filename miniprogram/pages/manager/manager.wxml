@@ -39,6 +39,9 @@
       <button class="btn btn-primary flex1" bindtap="stocktake">拍照盘点</button>
       <button wx:if="{{view==='active'}}" class="btn btn-green flex1" bindtap="remindBatch">一键提醒(超期+临期)</button>
     </view>
+    <view class="row gap" style="margin-top:12rpx">
+      <button class="btn btn-ghost flex1" bindtap="exportCsv">导出台账 CSV</button>
+    </view>
     <view wx:if="{{view==='active'}}" class="row gap" style="margin-top:12rpx">
       <button class="btn btn-ghost flex1" bindtap="scanUnlock">扫标签二维码开锁</button>
     </view>
@@ -53,7 +56,7 @@
     <view wx:if="{{view!=='archived'}}" class="tabs">
       <view wx:for="{{filters}}" wx:key="key"
             class="tab {{filter === item.key ? 'on' : ''}}"
-            data-k="{{item.key}}" bindtap="setFilter">{{item.label}}</view>
+            data-k="{{item.key}}" bindtap="setFilter">{{item.key==='escalated' && escCount ? item.label + '(' + escCount + ')' : item.label}}</view>
     </view>
 
     <view class="tabs">

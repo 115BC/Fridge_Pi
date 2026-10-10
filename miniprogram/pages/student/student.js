@@ -9,15 +9,25 @@ Page({
     items: [],
     unlockTip: '', unlockColor: '',
     qrShow: false, qr: null,
-    adminContact: ''
+    adminContact: '', notices: []
   },
   onShow() {
     if (!app.guard(['student'])) return
     this.setData({ role: wx.getStorageSync('role'), user: wx.getStorageSync('user') })
     this.loadMine()
+    this.loadNotices()
     api.request('/api/v1/buildings', 'GET', {}, false)
       .then(d => this.setData({ adminContact: d.admin_contact || '' }))
       .catch(() => {})
+  },
+  loadNotices() {
+    const LABEL = { sent: '已推送微信', skipped: '未送达(未订阅/额度用尽)', failed: '发送失败' }
+    return api.get('/api/v1/notifications/mine').then(d => {
+      const notices = d.notifications.map(n => Object.assign(n, {
+        status_label: LABEL[n.status] || n.status
+      }))
+      this.setData({ notices })
+    }).catch(() => {})
   },
   onPullDownRefresh() { this.loadMine().then(() => wx.stopPullDownRefresh()) },
 

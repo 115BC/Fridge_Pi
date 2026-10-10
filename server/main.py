@@ -1,9 +1,10 @@
 import asyncio
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +14,6 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.requests import Request
 from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 抑制低光QR误检刷屏
@@ -52,6 +52,7 @@ MANAGER_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("manager_openids") or [])
 DEV_LOGIN = bool(CFG["wechat"].get("dev_login"))   # 仅内网调试：code 带 "dev:" 前缀时跳过微信验证
 AUTO = CFG["rules"].get("auto_remind", {})
 STOCK_KEEP_DAYS = CFG["rules"].get("stocktake_keep_days", 7)
+ESCALATE_DAYS = int(CFG["rules"].get("overdue_escalate_days", 3))   # 超期N天进宿管"超期待处理"
 PI_LOCAL = (CFG["print"].get("pi_local_api") or "").rstrip("/")
 DEFAULT_CAPACITY_ML = int(CFG.get("fridge", {}).get("capacity_ml") or 150000)
 PHOTO_DIR = Path(CFG["paths"].get("photo_dir") or (db.DATA_DIR / "photos"))
@@ -75,21 +76,39 @@ async def auto_remind_loop():
         await asyncio.sleep(50)
 
 
+async def overdue_escalate_loop():
+    """每 6 小时扫一遍：超期 ESCALATE_DAYS 天仍在库的物品打上 escalated 标记，
+    进入宿管「超期待处理」清单（只提醒人，不自动清理）。"""
+    while True:
+        try:
+            cutoff = (datetime.now() - timedelta(days=ESCALATE_DAYS)).strftime("%Y-%m-%d")
+            ids = [r["id"] for r in rows(
+                "SELECT id FROM items WHERE status='active' AND escalated=0 AND expire_at < ?",
+                (cutoff,))]
+            if ids:
+                c = db.conn()
+                for i in ids:
+                    c.execute("UPDATE items SET escalated=1 WHERE id=?", (i,))
+                db.log_event("overdue_escalate", "system", f"{len(ids)} 件超期未处理，进入宿管待办")
+        except Exception as e:
+            print(f"[overdue_escalate] 失败: {e}")
+        await asyncio.sleep(6 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
-    task = None
+    tasks = [asyncio.create_task(overdue_escalate_loop())]
     if AUTO.get("enabled"):
-        task = asyncio.create_task(auto_remind_loop())
+        tasks.append(asyncio.create_task(auto_remind_loop()))
     yield
-    if task:
-        task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(title="宿舍冰箱管理后端", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
-app.mount("/photos", StaticFiles(directory=PHOTO_DIR), name="photos")
 
 me_dep = auth.user
 manager_dep = auth.require_role("manager", "admin")   # 物品域：宿管+超管
@@ -405,10 +424,13 @@ def item_qr(item_id: int, user: dict = Depends(me_dep)):
 def all_items(color: Optional[str] = Query(None), status: str = "active",
               q: Optional[str] = Query(None), sort: str = "urgency",
               building: Optional[str] = Query(None),
+              escalated: Optional[int] = Query(None),
               _: dict = Depends(manager_dep)):
     where, args = "i.status=?", [status]
     if status == "archived":
         where, args = "i.status IN ('taken_out','removed')", []
+    if escalated:
+        where += " AND i.escalated=1"
     if building:
         where += " AND i.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)"
         args.append(building)
@@ -427,7 +449,9 @@ def all_items(color: Optional[str] = Query(None), status: str = "active",
     elif sort == "volume":
         items.sort(key=lambda x: x.get("vol_est_ml") or 0, reverse=True)
     # sort=urgency：沿用 decorate 的 红→黄→绿、到期日升序
-    return {"items": items, "warn_days": WARN_DAYS,
+    esc_count = db.conn().execute(
+        "SELECT COUNT(*) FROM items WHERE status='active' AND escalated=1").fetchone()[0]
+    return {"items": items, "warn_days": WARN_DAYS, "escalated_count": esc_count,
             "counts": {c: sum(1 for it in items if it["color"] == c)
                        for c in ("red", "yellow", "green")}}
 
@@ -501,6 +525,7 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
         if row["status"] != "active":
             raise HTTPException(400, "物品不在库")
         c.execute("UPDATE items SET status='taken_out' WHERE id=?", (item_id,))
+        c.execute("UPDATE items SET escalated=0 WHERE id=?", (item_id,))
         db.log_event("item_taken", user["openid"], f"{row['code']} {row['name']}")
         return {"ok": True, "status": "taken_out"}
 
@@ -523,6 +548,7 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
         except ValueError:
             raise HTTPException(400, "到期日格式应为 YYYY-MM-DD")
         c.execute("UPDATE items SET expire_at=? WHERE id=?", (new_date, item_id))
+        c.execute("UPDATE items SET escalated=0 WHERE id=?", (item_id,))
         db.log_event("item_expire_edit", user["openid"],
                      f"{row['code']} {row['name']} {row['expire_at']} -> {new_date}")
         return {"ok": True, "expire_at": new_date}
@@ -533,6 +559,7 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
     if req.action not in target:
         raise HTTPException(400, "非法操作")
     c.execute("UPDATE items SET status=? WHERE id=?", (target[req.action], item_id))
+    c.execute("UPDATE items SET escalated=0 WHERE id=?", (item_id,))
     db.log_event(f"item_{req.action}", user["openid"],
                  f"{row['code']} {row['name']} photo={req.photo} note={req.note}")
     return {"ok": True, "status": target[req.action]}
@@ -589,6 +616,34 @@ def set_volume(item_id: int, req: VolumeReq, user: dict = Depends(manager_dep)):
 
 
 # ---------- 宿管：拍照批量盘点 ----------
+def _store_photo(name: str, img):
+    """照片双写：MySQL（云端持久，发布不丢）+ 本地文件（派上/开发环境直读）。"""
+    try:
+        cv2.imwrite(str(PHOTO_DIR / name), img)
+    except Exception:
+        pass
+    ok, buf = cv2.imencode(".jpg", img)
+    if ok:
+        db.save_photo(name, buf.tobytes())
+
+
+_PHOTO_NAME_RE = re.compile(r"^[\w.\-]{1,128}$")
+
+
+@app.get("/photos/{name}")
+def get_photo(name: str):
+    if not _PHOTO_NAME_RE.match(name):
+        raise HTTPException(400, "非法照片名")
+    blob = db.load_photo(name)
+    if blob is None:
+        f = PHOTO_DIR / name
+        if f.exists():
+            blob = f.read_bytes()
+    if blob is None:
+        raise HTTPException(404, "照片不存在或已过期清理")
+    return Response(content=blob, media_type="image/jpeg")
+
+
 def _stocktake_core(img, name: str, fridge_id: str, user: dict) -> dict:
     detector = cv2.QRCodeDetector()
 
@@ -618,7 +673,8 @@ def _stocktake_core(img, name: str, fridge_id: str, user: dict) -> dict:
     db.log_event("stocktake", user["openid"],
                  f"识别{len(found)} 未见{len(missing)} 无登记{len(unknown)} 照片{name}")
 
-    # 顺带清理过期盘点照片
+    # 顺带清理过期盘点照片（库+本地文件）
+    db.delete_old_photos(STOCK_KEEP_DAYS)
     cutoff = time.time() - STOCK_KEEP_DAYS * 86400
     for f in PHOTO_DIR.glob("stocktake_*"):
         if f.stat().st_mtime < cutoff:
@@ -641,7 +697,7 @@ async def stocktake(file: UploadFile = File(...), fridge_id: str = Form(""),
     if img is None:
         raise HTTPException(400, "图片无法解析")
     name = f"stocktake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
-    cv2.imwrite(str(PHOTO_DIR / name), img)
+    _store_photo(name, img)
     return _stocktake_core(img, name, fridge_id, user)
 
 
@@ -664,7 +720,7 @@ async def stocktake_b64(req: StocktakeB64Req, user: dict = Depends(manager_dep))
     if img is None:
         raise HTTPException(400, "图片无法解析")
     name = f"stocktake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
-    cv2.imwrite(str(PHOTO_DIR / name), img)
+    _store_photo(name, img)
     return _stocktake_core(img, name, req.fridge_id, user)
 
 
@@ -1038,9 +1094,63 @@ def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
     return {"ok": True}
 
 
+@app.get("/api/v1/export/items.csv")
+def export_items_csv(status: str = "all", building: str = "",
+                     user: dict = Depends(manager_dep)):
+    """台账导出（Excel 可直接打开）。status=all|active|pending_claim|archived。"""
+    import csv as _csv
+    import io
+    sql = ("SELECT i.*, u.name AS owner_name, u.room AS owner_room, u.building AS owner_building "
+           "FROM items i JOIN users u ON u.id=i.user_id WHERE 1=1")
+    args: list = []
+    if building:
+        sql += " AND i.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)"
+        args.append(building)
+    if status == "active":
+        sql += " AND i.status='active'"
+    elif status == "pending_claim":
+        sql += " AND i.status='pending_claim'"
+    elif status == "archived":
+        sql += " AND i.status IN ('taken_out','removed')"
+    sql += " ORDER BY i.id"
+    st_label = {"active": "在库", "pending_claim": "待认领",
+                "taken_out": "已取出", "removed": "已清理"}
+    items = volume.attach(colors.decorate(rows(sql, args), WARN_DAYS))
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["编码", "物品名", "类别", "数量", "主人", "寝室", "楼宇", "冰箱",
+                "到期日", "状态", "紧急度", "估算体积(L)", "登记时间"])
+    for it in items:
+        w.writerow([it["code"], it["name"], it["category"], it["quantity"],
+                    it["owner_name"], it["owner_room"], it.get("owner_building") or "未分楼",
+                    it["fridge_id"], it["expire_at"], st_label.get(it["status"], it["status"]),
+                    it.get("color_label", ""), round((it.get("vol_est_ml") or 0) / 1000, 1),
+                    it["created_at"]])
+    db.log_event("export_csv", user["openid"], f"status={status} building={building or '全部'}")
+    return Response(content="\ufeff" + buf.getvalue(),
+                    media_type="text/csv; charset=utf-8")
+
+
+@app.get("/api/v1/notifications/mine")
+def my_notifications(user: dict = Depends(me_dep)):
+    """订阅兜底：微信推送历史（含未送达原因），学生页可直接查看，不依赖订阅额度。"""
+    rs = rows("SELECT r.created_at, r.status, r.channel, r.detail, "
+              "i.name AS item_name, i.expire_at "
+              "FROM reminders r LEFT JOIN items i ON i.id=r.item_id "
+              "WHERE r.user_id=? ORDER BY r.id DESC LIMIT 20", (user["id"],))
+    return {"notifications": rs}
+
+
+@app.get("/api/v1/admin/backup-rows")
+def admin_backup_rows(_: None = Depends(_pi_auth)):
+    """每日冷备通道：仅 X-Pi-Secret 鉴权（不受迁移开关限制），供树莓派 cron 拉取存档。"""
+    return {"ts": int(time.time()),
+            "tables": {t: rows(f"SELECT * FROM {t}") for t in db.TABLES}}
+
+
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "building-2026-10-10-1",
+    return {"ok": True, "build": "ops-2026-10-10-1",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 

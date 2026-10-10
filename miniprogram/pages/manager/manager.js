@@ -5,6 +5,7 @@ const app = getApp()
 
 const FILTERS = [
   { key: '', label: '全部' },
+  { key: 'escalated', label: '超期待处理' },
   { key: 'red', label: '超期' },
   { key: 'yellow', label: '临期' },
   { key: 'green', label: '正常' }
@@ -25,7 +26,7 @@ Page({
   data: {
     role: '', user: null, filters: FILTERS, filter: '', q: '',
     sorts: SORTS, sort: 'urgency',
-    items: [], counts: {}, view: 'active', stock: null, stockBusy: false,
+    items: [], counts: {}, escCount: 0, view: 'active', stock: null, stockBusy: false,
     unlockTip: '', unlockColor: '', cap: null,
     section: 'items', isAdmin: false,
     buildings: [], pickerNames: [], building: wx.getStorageSync('mgr_building') || '',
@@ -88,7 +89,8 @@ Page({
   setSort(e) { this.setData({ sort: e.currentTarget.dataset.k }, () => this.load()) },
   load() {
     const parts = ['status=' + this.data.view, 'sort=' + this.data.sort]
-    if (this.data.filter) parts.push('color=' + this.data.filter)
+    if (this.data.filter === 'escalated') parts.push('escalated=1')
+    else if (this.data.filter) parts.push('color=' + this.data.filter)
     if (this.data.q) parts.push('q=' + encodeURIComponent(this.data.q))
     if (this.data.building) parts.push('building=' + encodeURIComponent(this.data.building))
     return api.get('/api/v1/items' + '?' + parts.join('&')).then(d => {
@@ -97,7 +99,7 @@ Page({
         vol_l: (it.vol_est_ml / 1000).toFixed(1),
         status_label: STATUS_LABEL[it.status] || ''
       }))
-      this.setData({ items, counts: d.counts })
+      this.setData({ items, counts: d.counts, escCount: d.escalated_count || 0 })
       this.loadCapacity()
     }).catch(e => wx.showToast({ title: '加载失败', icon: 'none' }))
   },
@@ -202,6 +204,25 @@ Page({
         setTimeout(() => this.pollUnlock(itemId, tries + 1), 1500)
       }
     }).catch(() => setTimeout(() => this.pollUnlock(itemId, tries + 1), 1500))
+  },
+
+  // 台账导出：CSV 写临时文件后转发到微信（可在电脑/手机用 Excel 打开）
+  exportCsv() {
+    const parts = ['status=all']
+    if (this.data.building) parts.push('building=' + encodeURIComponent(this.data.building))
+    wx.showLoading({ title: '导出中' })
+    api.get('/api/v1/export/items.csv?' + parts.join('&')).then(text => {
+      wx.hideLoading()
+      if (typeof text !== 'string' || !text.includes('编码'))
+        return wx.showToast({ title: '导出失败', icon: 'none' })
+      const fp = wx.env.USER_DATA_PATH + '/冰箱台账_' +
+        (this.data.building || '全部') + '_' + Date.now() + '.csv'
+      wx.getFileSystemManager().writeFile({
+        filePath: fp, data: text, encoding: 'utf8',
+        success: () => wx.shareFileMessage({ filePath: fp, fail: () => {} }),
+        fail: () => wx.showToast({ title: '写入文件失败', icon: 'none' })
+      })
+    }).catch(() => { wx.hideLoading(); wx.showToast({ title: '导出失败', icon: 'none' }) })
   },
 
   // 待认领流转

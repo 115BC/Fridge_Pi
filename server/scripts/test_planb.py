@@ -234,6 +234,33 @@ c.delete(B + "/api/v1/admin/buildings/东楼", headers=H(mgr["token"]))   # 还�
 check("有学生的楼删不掉(再次确认)", c.delete(B + "/api/v1/admin/buildings/东楼",
       headers=H(mgr["token"])).status_code == 400)
 
+# 5.6 运维增强：照片落库 / 超期升级 / CSV导出 / 通知兜底 / 备份通道
+_db2 = sqlite3.connect(Path(__file__).resolve().parent.parent / "data" / "fridge.db")
+ph_n = _db2.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+ph_name = _db2.execute("SELECT name FROM photos LIMIT 1").fetchone()
+check("盘点照片已落库(发布不丢)", ph_n >= 1 and ph_name is not None, f"{ph_n} 张")
+if ph_name:
+    img = c.get(B + "/photos/" + ph_name[0])
+    check("照片接口可读(JPEG)", img.status_code == 200 and img.content[:2] == b"\xff\xd8")
+_db2.execute("UPDATE items SET escalated=1 WHERE id=?", (it_d["item_id"],)); _db2.commit()
+esc = c.get(B + "/api/v1/items?escalated=1", headers=H(mgr2["token"])).json()
+check("超期待处理筛选", any(i["id"] == it_d["item_id"] for i in esc["items"])
+      and esc.get("escalated_count", 0) >= 1)
+c.post(B + f"/api/v1/items/{it_d['item_id']}/action", json={"action": "expire", "value": _soon},
+       headers=H(mgr["token"]))
+esc2 = c.get(B + "/api/v1/items?escalated=1", headers=H(mgr2["token"])).json()
+check("宿管处理后自动移出待办", not any(i["id"] == it_d["item_id"] for i in esc2["items"]))
+csv_r = c.get(B + "/api/v1/export/items.csv?status=all", headers=H(mgr2["token"]))
+check("台账CSV导出(含表头/楼宇列)", csv_r.status_code == 200 and "编码" in csv_r.text
+      and "楼宇" in csv_r.text and "楼测酸奶" in csv_r.text, str(csv_r.status_code))
+csv_b = c.get(B + "/api/v1/export/items.csv?status=all&building=东楼", headers=H(mgr2["token"]))
+check("CSV按楼导出", "楼测酸奶" in csv_b.text and "酸奶" not in csv_b.text.replace("楼测酸奶", ""))
+nt = c.get(B + "/api/v1/notifications/mine", headers=H(stuD["token"])).json()
+check("学生通知历史(订阅兜底)", len(nt.get("notifications", [])) >= 1, str(nt)[:60])
+bk = c.get(B + "/api/v1/admin/backup-rows", headers=PS).json()
+check("备份通道(派拉取)", bk.get("tables", {}).get("users") and len(bk["tables"]["users"]) >= 4)
+_db2.close()
+
 # 6. 心跳与锁状态
 hb = c.get(B + "/api/v1/debug/pi", headers=H(mgr["token"])).json()["pi_nodes"]
 check("Pi 心跳上报", hb and hb[0]["fridge_id"] == "fridge-01", str(hb))

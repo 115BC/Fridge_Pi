@@ -49,6 +49,16 @@
     </view>
   </view>
 
+  <view wx:if="{{notices.length}}" class="card">
+    <view class="card-title">通知历史（微信提醒记录）</view>
+    <view wx:for="{{notices}}" wx:key="index" class="kv">
+      <view class="muted">{{item.created_at}} · {{item.item_name || '物品'}} {{item.expire_at ? '到期' + item.expire_at : ''}}
+        <text class="badge {{item.status==='sent' ? 'badge-green' : 'badge-yellow'}}">{{item.status_label}}</text>
+      </view>
+    </view>
+    <view class="muted" style="margin-top:8rpx">显示"未送达"= 提醒额度用完，点上方「开启到期提醒」补一条即可</view>
+  </view>
+
   <view wx:if="{{qrShow}}" class="qrmask" bindtap="hideQr">
     <view class="qrbox" catchtap="noop">
       <view class="qrtitle">{{qr.name}} · 取物码</view>

@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("FRIDGE_DATA_DIR") or
@@ -73,6 +74,11 @@ CREATE TABLE IF NOT EXISTS buildings(
   name TEXT PRIMARY KEY,                 -- 楼宇名（学生选择、宿管筛选用）
   fridge_id TEXT NOT NULL                -- 该楼冰箱=树莓派设备，物品/容量按此归属
 );
+CREATE TABLE IF NOT EXISTS photos(
+  name TEXT PRIMARY KEY,                 -- 盘点/清理照片：云托管容器文件系统发布即清空，必须落库
+  data BLOB NOT NULL,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
 """
 
 # 与 SQLite 版一一对应；时间列用 DATETIME 保持 NOW() 默认值语义；
@@ -138,6 +144,11 @@ CREATE TABLE IF NOT EXISTS settings(
 CREATE TABLE IF NOT EXISTS buildings(
   name VARCHAR(64) PRIMARY KEY,
   fridge_id VARCHAR(64) NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photos(
+  name VARCHAR(128) PRIMARY KEY,
+  data LONGBLOB NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -273,6 +284,10 @@ def init():
             c.execute("ALTER TABLE users ADD COLUMN building VARCHAR(64) DEFAULT ''")
         except Exception:
             pass
+        try:
+            c.execute("ALTER TABLE items ADD COLUMN escalated INT DEFAULT 0")
+        except Exception:
+            pass
     else:
         with conn() as c:
             c.executescript(SCHEMA)
@@ -286,6 +301,10 @@ def init():
                 pass
             try:
                 c.execute("ALTER TABLE users ADD COLUMN building TEXT DEFAULT ''")  # 所属楼宇，空=待补登记
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE items ADD COLUMN escalated INTEGER DEFAULT 0")  # 超期未处理标记
             except sqlite3.OperationalError:
                 pass
     if not conn().execute("SELECT name FROM buildings LIMIT 1").fetchone():
@@ -307,3 +326,20 @@ def log_event(type_: str, actor: str, detail: str = ""):
     with conn() as c:
         c.execute("INSERT INTO events(type, actor, detail) VALUES(?,?,?)",
                   (type_, actor, detail))
+
+
+# ---------- 照片（盘点/清理留痕）：容器文件系统不可靠，统一落库 ----------
+def save_photo(name: str, blob: bytes):
+    with conn() as c:
+        c.execute("INSERT INTO photos(name, data) VALUES(?, ?) "
+                  "ON CONFLICT(name) DO UPDATE SET data=excluded.data", (name, blob))
+
+
+def load_photo(name: str):
+    row = conn().execute("SELECT data FROM photos WHERE name=?", (name,)).fetchone()
+    return bytes(row["data"]) if row else None
+
+
+def delete_old_photos(days: int):
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn().execute("DELETE FROM photos WHERE created_at < ?", (cutoff,))
