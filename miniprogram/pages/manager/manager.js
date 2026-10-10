@@ -26,7 +26,7 @@ Page({
   data: {
     role: '', user: null, filters: FILTERS, filter: '', q: '',
     sorts: SORTS, sort: 'urgency',
-    items: [], counts: {}, escCount: 0, view: 'active', stock: null, stockBusy: false,
+    items: [], counts: {}, escCount: 0, view: 'active', stock: null, stockBusy: false, csvPath: '',
     unlockTip: '', unlockColor: '', cap: null,
     section: 'items', isAdmin: false,
     buildings: [], pickerNames: [], building: wx.getStorageSync('mgr_building') || '',
@@ -88,6 +88,7 @@ Page({
   },
   setSort(e) { this.setData({ sort: e.currentTarget.dataset.k }, () => this.load()) },
   load() {
+    if (this.data.csvPath) this.setData({ csvPath: '' })   // 筛选/楼变了，旧导出文件作废，避免发错版本
     const parts = ['status=' + this.data.view, 'sort=' + this.data.sort]
     if (this.data.filter === 'escalated') parts.push('escalated=1')
     else if (this.data.filter) parts.push('color=' + this.data.filter)
@@ -206,11 +207,18 @@ Page({
     }).catch(() => setTimeout(() => this.pollUnlock(itemId, tries + 1), 1500))
   },
 
-  // 台账导出：CSV 写临时文件后转发到微信（可在电脑/手机用 Excel 打开）
+  // 台账导出（两步）：第一次点生成 CSV；再点一次直接发送（shareFileMessage 必须在点击上下文中调用）
   exportCsv() {
+    if (this.data.csvPath) {
+      wx.shareFileMessage({
+        filePath: this.data.csvPath,
+        fail: () => wx.showModal({ title: '发送未成功', content: '请在手机上重试；开发者工具对发送文件支持不全', showCancel: false })
+      })
+      return
+    }
     const parts = ['status=all']
     if (this.data.building) parts.push('building=' + encodeURIComponent(this.data.building))
-    wx.showLoading({ title: '导出中' })
+    wx.showLoading({ title: '生成中' })
     api.get('/api/v1/export/items.csv?' + parts.join('&')).then(text => {
       wx.hideLoading()
       if (typeof text !== 'string' || !text.includes('编码'))
@@ -219,7 +227,10 @@ Page({
         (this.data.building || '全部') + '_' + Date.now() + '.csv'
       wx.getFileSystemManager().writeFile({
         filePath: fp, data: text, encoding: 'utf8',
-        success: () => wx.shareFileMessage({ filePath: fp, fail: () => {} }),
+        success: () => {
+          this.setData({ csvPath: fp })
+          wx.showToast({ title: '已生成，再点一次「导出」发送', icon: 'none', duration: 2500 })
+        },
         fail: () => wx.showToast({ title: '写入文件失败', icon: 'none' })
       })
     }).catch(() => { wx.hideLoading(); wx.showToast({ title: '导出失败', icon: 'none' }) })
