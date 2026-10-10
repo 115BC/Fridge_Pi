@@ -28,32 +28,69 @@ Page({
     items: [], counts: {}, view: 'active', stock: null, stockBusy: false,
     unlockTip: '', unlockColor: '', cap: null,
     section: 'items', isAdmin: false,
+    buildings: [], pickerNames: [], building: wx.getStorageSync('mgr_building') || '',
     users: [], uq: '', roleOptions: ROLE_OPTIONS,
+    students: [], sq: '',
     pi_nodes: [], unlock_commands: [], events: [], reminders: []
   },
   onShow() {
     if (!app.guard(['manager', 'admin'])) return
     const role = wx.getStorageSync('role')
     this.setData({ role, user: wx.getStorageSync('user'), isAdmin: role === 'admin' })
+    this.loadBuildings()
     this.load()
   },
   onPullDownRefresh() {
     const p = this.data.section === 'items' ? this.load()
+      : this.data.section === 'students' ? this.loadStudents()
       : this.data.section === 'users' ? this.loadUsers() : this.loadDebug()
     p.then(() => wx.stopPullDownRefresh())
   },
   setSection(e) {
     const s = e.currentTarget.dataset.s
-    if (s !== 'items' && !this.data.isAdmin) return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
+    if (s !== 'items' && s !== 'students' && !this.data.isAdmin)
+      return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
     this.setData({ section: s })
+    if (s === 'students') this.loadStudents()
     if (s === 'users') this.loadUsers()
     if (s === 'debug') this.loadDebug()
+  },
+
+  // ---------- 楼宇：切换筛选（宿管可切任意楼）+ 超管维护 ----------
+  loadBuildings() {
+    return api.get('/api/v1/buildings').then(d => {
+      const bs = d.buildings || []
+      const pickerNames = ['全部楼宇'].concat(bs.map(b => b.name))
+      if (this.data.building && !bs.some(b => b.name === this.data.building)) {
+        this.setData({ buildings: bs, pickerNames, building: '' }, () => this.refreshSection())
+      } else {
+        this.setData({ buildings: bs, pickerNames })
+      }
+    }).catch(() => {})
+  },
+  onBuilding(e) {
+    const bs = this.data.buildings
+    const idx = Number(e.detail.value)
+    const name = idx === 0 ? '' : (bs[idx - 1] || {}).name || ''
+    this.setData({ building: name }, () => {
+      wx.setStorageSync('mgr_building', name)
+      this.refreshSection()
+    })
+  },
+  refreshSection() {
+    if (this.data.section === 'students') return this.loadStudents()
+    return this.load()
+  },
+  currentFridge() {
+    const b = this.data.buildings.find(x => x.name === this.data.building)
+    return b ? b.fridge_id : 'fridge-01'
   },
   setSort(e) { this.setData({ sort: e.currentTarget.dataset.k }, () => this.load()) },
   load() {
     const parts = ['status=' + this.data.view, 'sort=' + this.data.sort]
     if (this.data.filter) parts.push('color=' + this.data.filter)
     if (this.data.q) parts.push('q=' + encodeURIComponent(this.data.q))
+    if (this.data.building) parts.push('building=' + encodeURIComponent(this.data.building))
     return api.get('/api/v1/items' + '?' + parts.join('&')).then(d => {
       const items = d.items.map(it => Object.assign(it, {
         color_label: colorUtil.labelOf(it.color),
@@ -65,22 +102,24 @@ Page({
     }).catch(e => wx.showToast({ title: '加载失败', icon: 'none' }))
   },
   loadCapacity() {
-    return api.get('/api/v1/capacity').then(c => {
+    const fridge = this.currentFridge()
+    return api.get('/api/v1/capacity?fridge_id=' + encodeURIComponent(fridge)).then(c => {
       this.setData({ cap: {
         capacity_l: (c.capacity_ml / 1000).toFixed(0),
         used_l: (c.used_ml / 1000).toFixed(1),
-        util: c.util_pct, count: c.item_count
+        util: c.util_pct, count: c.item_count, fridge
       } })
     }).catch(() => {})
   },
   editCapacity() {
+    const fridge = (this.data.cap || {}).fridge || this.currentFridge()
     wx.showModal({
-      title: '修正冰箱总容量', editable: true, placeholderText: '升，如 120',
+      title: '修正冰箱总容量', content: `当前冰箱：${fridge}`, editable: true, placeholderText: '升，如 120',
       success: r => {
         if (!r.confirm) return
         const l = parseFloat(r.content)
         if (!(l > 0)) return wx.showToast({ title: '请输入有效容量', icon: 'none' })
-        api.post('/api/v1/capacity', { capacity_ml: Math.round(l * 1000) }).then(() => {
+        api.post('/api/v1/capacity', { capacity_ml: Math.round(l * 1000), fridge_id: fridge }).then(() => {
           wx.showToast({ title: '已更新', icon: 'success' })
           this.loadCapacity()
         }).catch(() => wx.showToast({ title: '保存失败', icon: 'none' }))
@@ -120,7 +159,7 @@ Page({
         const send = (fp) => wx.getFileSystemManager().readFile({
           filePath: fp, encoding: 'base64',
           success: r => api.post('/api/v1/stocktake_b64',
-            { image_b64: r.data, fridge_id: 'fridge-01' }
+            { image_b64: r.data, fridge_id: this.currentFridge() }
           ).then(d => this.setData({ stock: d })
           ).catch(e => wx.showToast({ title: '盘点失败:' + (e.data && e.data.detail || e.statusCode), icon: 'none' })
           ).finally(() => { wx.hideLoading(); this.setData({ stockBusy: false }) }),
@@ -242,6 +281,99 @@ Page({
     }).catch(err => wx.showToast({ title: '设置失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
   },
 
+  // ---------- 学生管理（宿管：按楼筛选、代改姓名/寝室；超管额外可改楼/管楼宇） ----------
+  loadStudents() {
+    const parts = []
+    if (this.data.building) parts.push('building=' + encodeURIComponent(this.data.building))
+    if (this.data.sq) parts.push('q=' + encodeURIComponent(this.data.sq))
+    return api.get('/api/v1/users' + (parts.length ? '?' + parts.join('&') : '')).then(d => {
+      const students = d.users.filter(u => u.role === 'student' || !u.building).map(u => Object.assign(u, {
+        building_label: u.building || '未分楼'
+      }))
+      this.setData({ students })
+    }).catch(() => {})
+  },
+  onStudentSearch(e) { this.setData({ sq: e.detail.value }, () => this.loadStudents()) },
+  editStudent(e) {
+    const it = e.currentTarget.dataset.it
+    wx.showModal({
+      title: `「${it.name || it.openid}」的姓名`, editable: true, placeholderText: it.name || '输入姓名',
+      success: r1 => {
+        if (!r1.confirm) return
+        const name = (r1.content || '').trim() || it.name
+        wx.showModal({
+          title: '寝室号', editable: true, placeholderText: it.room || '如 2-417',
+          success: r2 => {
+            if (!r2.confirm) return
+            const room = (r2.content || '').trim() || it.room
+            api.post(`/api/v1/users/${it.id}/profile`, { name, room }).then(() => {
+              wx.showToast({ title: '已更新', icon: 'success' })
+              this.loadStudents()
+            }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+          }
+        })
+      }
+    })
+  },
+  changeStudentBuilding(e) {
+    if (!this.data.isAdmin) return wx.showToast({ title: '改楼宇仅超管可操作', icon: 'none' })
+    const it = e.currentTarget.dataset.it
+    const names = this.data.buildings.map(b => b.name)
+    if (!names.length) return wx.showToast({ title: '还没有楼宇，请先添加', icon: 'none' })
+    wx.showActionSheet({
+      itemList: names,
+      success: r => {
+        api.post(`/api/v1/users/${it.id}/building`, { building: names[r.tapIndex] }).then(() => {
+          wx.showToast({ title: `已移到${names[r.tapIndex]}`, icon: 'success' })
+          this.loadStudents()
+        }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      }
+    })
+  },
+  addBuilding() {
+    wx.showModal({
+      title: '新增楼宇：名称', editable: true, placeholderText: '如 东楼',
+      success: r1 => {
+        if (!r1.confirm) return
+        const name = (r1.content || '').trim()
+        if (!name) return wx.showToast({ title: '名称不能为空', icon: 'none' })
+        wx.showModal({
+          title: '该楼冰箱编号（树莓派配置里的 fridge_id）', editable: true, placeholderText: '如 fridge-02',
+          success: r2 => {
+            if (!r2.confirm) return
+            const fridge = (r2.content || '').trim()
+            if (!fridge) return wx.showToast({ title: '冰箱编号不能为空', icon: 'none' })
+            api.post('/api/v1/admin/buildings', { name, fridge_id: fridge }).then(() => {
+              wx.showToast({ title: '已添加', icon: 'success' })
+              this.loadBuildings(); this.loadStudents()
+            }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+          }
+        })
+      }
+    })
+  },
+  delBuilding(e) {
+    const name = e.currentTarget.dataset.name
+    wx.showModal({
+      title: '删除楼宇', content: `确认删除「${name}」？有学生归属时删不掉。`,
+      success: r => r.confirm && api.del('/api/v1/admin/buildings/' + encodeURIComponent(name)).then(() => {
+        wx.showToast({ title: '已删除', icon: 'success' })
+        this.loadBuildings(); this.refreshSection()
+      }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+    })
+  },
+  setContact() {
+    wx.showModal({
+      title: '超管联系方式（学生页展示）', editable: true, placeholderText: '如 微信号 xxx，留空则隐藏',
+      success: r => {
+        if (!r.confirm) return
+        api.post('/api/v1/admin/contact', { value: (r.content || '').trim() }).then(() => {
+          wx.showToast({ title: '已保存', icon: 'success' })
+        }).catch(() => wx.showToast({ title: '保存失败', icon: 'none' }))
+      }
+    })
+  },
+
   // 系统调试（原超管能力）
   loadDebug() {
     return Promise.all([
@@ -262,12 +394,13 @@ Page({
     }).catch(() => { wx.hideLoading(); wx.showToast({ title: '推送失败', icon: 'none' }) })
   },
   remindBatch() {
+    const scope = this.data.building ? `【${this.data.building}】` : '【全部楼宇】'
     wx.showModal({
-      title: '一键提醒', content: '将向所有超期+临期物品的同学推送提醒，确认？',
+      title: '一键提醒', content: `将向${scope}所有超期+临期物品的同学推送提醒，确认？`,
       success: r => {
         if (!r.confirm) return
         wx.showLoading({ title: '批量推送中' })
-        api.post('/api/v1/reminders', { colors: ['red', 'yellow'] }).then(d => {
+        api.post('/api/v1/reminders', { colors: ['red', 'yellow'], building: this.data.building }).then(d => {
           wx.hideLoading()
           wx.showModal({ title: '完成', content: `共 ${d.total} 件，成功推送 ${d.sent} 件（其余为开发模式或用户未订阅）`, showCancel: false })
         }).catch(() => { wx.hideLoading(); wx.showToast({ title: '推送失败', icon: 'none' }) })

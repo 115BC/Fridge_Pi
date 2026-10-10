@@ -2,7 +2,8 @@ const api = require('../../utils/api.js')
 const app = getApp()
 
 Page({
-  data: { name: '', room: '', loading: false, needBind: false },
+  data: { name: '', room: '', loading: false, needBind: false,
+          buildings: [], buildingNames: [], buildingIndex: -1 },
   onLoad() {
     // 已登录直接进对应首页
     if (wx.getStorageSync('token') && wx.getStorageSync('role')) {
@@ -11,6 +12,13 @@ Page({
   },
   onName(e) { this.setData({ name: e.detail.value }) },
   onRoom(e) { this.setData({ room: e.detail.value }) },
+  onBuilding(e) { this.setData({ buildingIndex: Number(e.detail.value) }) },
+  loadBuildings() {
+    if (this.data.buildings.length) return
+    api.request('/api/v1/buildings', 'GET', {}, false).then(d => {
+      this.setData({ buildings: d.buildings, buildingNames: d.buildings.map(b => b.name) })
+    }).catch(() => wx.showToast({ title: '楼宇列表加载失败，下拉重试', icon: 'none' }))
+  },
   goto(role) {
     const home = { student: '/pages/student/student', manager: '/pages/manager/manager', admin: '/pages/manager/manager' }[role]
     wx.reLaunch({ url: home || '/pages/student/student' })
@@ -26,6 +34,7 @@ Page({
           .catch(e => {
             if (e.data && e.data.detail && e.data.detail.indexOf('NEED_BIND') === 0) {
               this.setData({ needBind: true })
+              this.loadBuildings()
             } else {
               wx.showToast({ title: '登录失败:' + (e.data && e.data.detail || e.errMsg || JSON.stringify(e).slice(0, 90)), icon: 'none' })
             }
@@ -35,16 +44,18 @@ Page({
       fail: () => { this.setData({ loading: false }); wx.showToast({ title: 'wx.login 失败', icon: 'none' }) }
     })
   },
-  // 第二步：绑定姓名+房间号（code 一次性，需重新取）
+  // 第二步：绑定姓名+房间号+楼宇（code 一次性，需重新取）
   doBind() {
     if (this.data.loading) return
     const name = this.data.name.trim(), room = this.data.room.trim()
+    const building = (this.data.buildings[this.data.buildingIndex] || {}).name || ''
     if (!name) { wx.showToast({ title: '请填写姓名', icon: 'none' }); return }
     if (!room) { wx.showToast({ title: '请填写房间号', icon: 'none' }); return }
+    if (!building) { wx.showToast({ title: '请选择所在楼宇', icon: 'none' }); return }
     this.setData({ loading: true })
     wx.login({
       success: res => {
-        api.post('/api/v1/wx/login', { code: res.code, name, room }, false)
+        api.post('/api/v1/wx/login', { code: res.code, name, room, building })
           .then(d => { this.saveAndGo(d) })
           .catch(e => { wx.showToast({ title: '绑定失败:' + (e.data && e.data.detail || e.errMsg || JSON.stringify(e).slice(0, 80)), icon: 'none' }) })
           .finally(() => this.setData({ loading: false }))

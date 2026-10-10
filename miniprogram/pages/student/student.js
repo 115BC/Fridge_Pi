@@ -8,14 +8,47 @@ Page({
     role: '', user: null,
     items: [],
     unlockTip: '', unlockColor: '',
-    qrShow: false, qr: null
+    qrShow: false, qr: null,
+    adminContact: ''
   },
   onShow() {
     if (!app.guard(['student'])) return
     this.setData({ role: wx.getStorageSync('role'), user: wx.getStorageSync('user') })
     this.loadMine()
+    api.request('/api/v1/buildings', 'GET', {}, false)
+      .then(d => this.setData({ adminContact: d.admin_contact || '' }))
+      .catch(() => {})
   },
   onPullDownRefresh() { this.loadMine().then(() => wx.stopPullDownRefresh()) },
+
+  // 修改姓名/寝室号（楼宇改动需超管，见下方提示）
+  editProfile() {
+    const u = this.data.user || {}
+    wx.showModal({
+      title: '第1步：修改姓名', editable: true, placeholderText: u.name || '输入姓名',
+      success: r1 => {
+        if (!r1.confirm) return
+        const name = (r1.content || '').trim() || u.name
+        wx.showModal({
+          title: '第2步：修改寝室号', editable: true, placeholderText: u.room || '如 2-417',
+          success: r2 => {
+            if (!r2.confirm) return
+            const room = (r2.content || '').trim() || u.room
+            if (!name || !room) return wx.showToast({ title: '姓名和寝室号不能为空', icon: 'none' })
+            api.put('/api/v1/me', { name, room }).then(d => {
+              wx.setStorageSync('user', d.user)
+              this.setData({ user: d.user })
+              wx.showToast({ title: '资料已更新', icon: 'success' })
+            }).catch(err => wx.showToast({ title: '保存失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+          }
+        })
+      }
+    })
+  },
+  copyContact() {
+    if (!this.data.adminContact) return
+    wx.setClipboardData({ data: this.data.adminContact })
+  },
   loadMine() {
     return api.get('/api/v1/items/mine').then(d => {
       const items = d.items.map(it => Object.assign(it, {

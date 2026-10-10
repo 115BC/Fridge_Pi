@@ -17,6 +17,12 @@
         <label>房间号 *</label>
         <input value="{{room}}" bindinput="onRoom" placeholder="必填，如 2-417" />
       </view>
+      <view class="field">
+        <label>所在楼宇 *</label>
+        <picker range="{{buildingNames}}" value="{{buildingIndex}}" bindchange="onBuilding">
+          <view class="picker {{buildingIndex>=0?'':'placeholder'}}">{{buildingIndex>=0 ? buildingNames[buildingIndex] : '点击选择楼宇（选错需找超管改）'}}</view>
+        </picker>
+      </view>
       <button class="btn btn-primary" loading="{{loading}}" bindtap="doBind">确认绑定并进入</button>
     </block>
   </view>

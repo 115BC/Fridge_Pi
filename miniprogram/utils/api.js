@@ -34,5 +34,7 @@ function request(path, method = 'GET', data = {}, needAuth = true) {
 module.exports = {
   request,
   get: (p, d) => request(p, 'GET', d),
-  post: (p, d) => request(p, 'POST', d)
+  post: (p, d) => request(p, 'POST', d),
+  put: (p, d) => request(p, 'PUT', d),
+  del: (p) => request(p, 'DELETE')
 }

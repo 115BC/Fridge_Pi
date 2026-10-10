@@ -10,6 +10,20 @@
   <view wx:if="{{unlockTip}}" class="unlock unlock-{{unlockColor}}">{{unlockTip}}</view>
 
   <view class="card">
+    <view class="hd">
+      <view class="card-title" style="margin:0">我的宿舍</view>
+      <view class="btn btn-ghost btn-sm" bindtap="editProfile">改姓名/寝室</view>
+    </view>
+    <view class="muted">楼宇：{{user.building || '未分配（请尽快联系超管补选）'}}</view>
+    <view class="muted">寝室：{{user.room || '-'}} · 姓名：{{user.name || '-'}}</view>
+    <view class="muted" style="margin-top:8rpx">
+      楼选错了？
+      <text wx:if="{{adminContact}}" class="link" bindtap="copyContact">联系超管：{{adminContact}}（点击复制）</text>
+      <text wx:else>只有超管能改，请找宿管帮你联系超管</text>
+    </view>
+  </view>
+
+  <view class="card">
     <view class="card-title">冰箱触控屏</view>
     <view class="muted">存入在冰箱触控屏完成：屏幕选「存入物品」会出现登录码 → 点下面按钮扫码 → 在屏幕拍照登记，标签自动打印、箱门自动开锁。</view>
     <button class="btn btn-primary" style="margin-top:16rpx" bindtap="scanLogin">扫屏幕登录码</button>

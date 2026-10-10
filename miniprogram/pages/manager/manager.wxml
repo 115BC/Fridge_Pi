@@ -9,8 +9,15 @@
 
   <view class="tabs">
     <view class="tab {{section==='items'?'on':''}}" data-s="items" bindtap="setSection">物品管理</view>
+    <view class="tab {{section==='students'?'on':''}}" data-s="students" bindtap="setSection">学生管理</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
+  </view>
+
+  <view wx:if="{{section==='items' || section==='students'}}" class="tabs">
+    <picker range="{{pickerNames}}" bindchange="onBuilding">
+      <view class="tab on">{{building || '全部楼宇'}} ▾</view>
+    </picker>
   </view>
 
   <block wx:if="{{section==='items'}}">
@@ -95,6 +102,42 @@
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">归还原位</view>
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act danger" data-it="{{item}}" bindtap="removeItem">清理留痕</view>
           <view wx:if="{{view==='archived'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">恢复在库</view>
+        </view>
+      </view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='students'}}">
+    <view wx:if="{{isAdmin}}" class="card">
+      <view class="hd">
+        <view class="card-title" style="margin:0">楼宇管理（超管）</view>
+        <view class="row gap">
+          <view class="btn btn-ghost btn-sm" bindtap="setContact">超管联系方式</view>
+          <view class="btn btn-ghost btn-sm" bindtap="addBuilding">添加楼宇</view>
+        </view>
+      </view>
+      <view wx:for="{{buildings}}" wx:key="name" class="kv">
+        <view class="li-name">{{item.name}} <text class="muted">冰箱 {{item.fridge_id}}</text></view>
+        <view class="btn btn-ghost btn-sm act danger" data-name="{{item.name}}" bindtap="delBuilding">删除</view>
+      </view>
+      <view class="muted" style="margin-top:8rpx">学生选错楼在这里改：进入下面的学生列表 → 改楼（仅超管可见按钮）</view>
+    </view>
+
+    <view class="card">
+      <input class="search" value="{{sq}}" bindinput="onStudentSearch" placeholder="搜索姓名 / 寝室号" />
+    </view>
+    <view wx:if="{{students.length === 0}}" class="empty">{{building ? '本楼暂无学生' : '暂无学生'}}</view>
+    <view wx:for="{{students}}" wx:key="id" class="card item">
+      <view class="list-item">
+        <view class="li-main">
+          <view class="li-name">{{item.name || '(未填名)'}}
+            <text class="badge {{item.building ? 'badge-green' : 'badge-red'}}">{{item.building_label}}</text>
+          </view>
+          <view class="muted">寝室 {{item.room || '-'}} · 在库额度 {{item.quota || 5}} 件</view>
+        </view>
+        <view class="col">
+          <view class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="editStudent">改姓名/寝室</view>
+          <view wx:if="{{isAdmin}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="changeStudentBuilding">改楼</view>
         </view>
       </view>
     </view>

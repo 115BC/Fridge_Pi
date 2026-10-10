@@ -1,3 +1,6 @@
 .logo { text-align: center; font-size: 48rpx; font-weight: 700; color: #1677ff; margin: 80rpx 0 12rpx; }
 .sub { text-align: center; color: #999; font-size: 26rpx; margin-bottom: 48rpx; }
 .tip { margin-top: 20rpx; text-align: center; }
+
+.picker { padding: 14rpx 18rpx; border: 1rpx solid #ddd; border-radius: 12rpx; background: #fff; }
+.picker.placeholder { color: #999; }
