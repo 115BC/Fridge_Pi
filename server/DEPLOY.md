@@ -1,8 +1,23 @@
-# 部署文档（当前采用方案 B，方案 A 保留可切换）
+# 部署文档（现行=方案 C 微信云托管；方案 B 同机部署保留作回滚/单机备选）
 
-两种方案**代码完全相同**，只改配置，随时互切。
+三种方案**代码完全相同**，只改配置与环境变量。
 
-## 方案 B（现行）：小程序后端 + 树莓派端 同机部署在冰箱旁的树莓派
+## 方案 C（现行，2026-10-09 起）：后端跑微信云托管，派只跑设备端
+
+```
+[微信小程序] ──wx.cloud.callContainer(免域名/免备案)──> [云托管服务 flask-pfwx: FastAPI+内置MySQL]
+[树莓派 pi 服务(WiFi)] ──HTTPS 轮询(X-Pi-Secret)──> [同上]        派上 fridge-server 已 stop+disable
+```
+
+要点（详细踩坑记录见 git log 2026-10-09~11）：
+- **发布**：控制台「部署发布→部署新版本」，代码来源必须选 **「从代码仓库拉取 GitHub master」**（选"拉取镜像/沿用上次构建"不会构建新代码）；目标目录 `server`、端口 80；`/healthz` 的 `build` 字段核对线上版本
+- **配置全走环境变量**（不入镜像）：`JWT_SECRET`、`PI_SECRET`（=派上 pi/config.yaml 的 secret）、`WX_APPID/WX_SECRET/WX_TEMPLATE_ID`、`PRINT_PI_LOCAL=""`、`ALLOW_DB_TRANSFER=0`（迁移通道开关，平时关闭）
+- **存储=云托管内置 MySQL**：注入 `MYSQL_ADDRESS` 后 `db.py` 自动切换（否则 SQLite）；文件存储挂载实测不可靠（发布清空），照片已改落库 photos 表
+- **数据迁移/冷备**：`GET /api/v1/admin/export-rows`（派上临时起 SQLite 版）→ `POST .../import-rows`（云端）；日常由派上 cron 每日拉 `GET .../backup-rows` 存 SD 卡（仓库 `scripts/cloud_backup.sh`，留 14 份）
+- **小程序通道**：云托管默认域名不能配合法域名，必须 `wx.cloud.callContainer`（header `X-WX-SERVICE: <服务名>`）；该通道不支持 multipart，盘点照片走 `stocktake_b64`
+- 回滚到方案 B：派上 `systemctl enable --now fridge-server`，pi/config.yaml `backend.base_url` 改回 `http://127.0.0.1:8001`
+
+## 方案 B（历史/单机备选）：小程序后端 + 树莓派端 同机部署在冰箱旁的树莓派
 
 ```
 [学生/宿管手机微信] ──HTTPS──> [公网域名] ──frp/端口映射──> [树莓派 Nginx :443]

@@ -2,7 +2,7 @@
 
 树莓派 5 (8GB) 运行 `app.py`，负责四件事：
 
-1. **电磁锁控制**：校验一次性令牌后开锁，超时自动落锁（先登记、后存放）
+1. **电控锁控制**：校验一次性令牌后发 0.6s 通电脉冲开锁（待机断电），蓝/白干接点反馈锁舌状态（GPIO26），关门压回锁舌自动重新上锁；`/api/door_status` 提供一次真实开合门事件
 2. **拍照识别**：官方 Camera Module（libcamera CLI）拍照 → 二维码解码标签 + MobileNetV3 本地分类（纯离线）
 3. **触控屏确认页**：`/kiosk` 显示识别建议，学生确认或修正分类后保存入库记录
 4. **后端轮询**：主动向小程序后端拉取解锁指令（冰箱在内网，无需开放入站端口）
@@ -38,15 +38,15 @@ python scripts/download_model.py    # 下载 MobileNetV3 ONNX (~21MB) + 类别�
 电磁锁 -端 ──► 模块 继电器/DRAIN 端 ──► 12V 负极
 ```
 
-- 电磁锁选**断电上锁型 (fail-secure)**：GPIO 高电平=通电开锁，掉电自动落锁，安全
+- 现装锁为**瞬间通电开锁型**（2026-10 换装）：红黑=1s 脉冲控制（切勿常通电），蓝白=无电干接点反馈（短路=已上锁，一根接 GPIO26 一根接 GND，严禁接电源）；关门压回锁舌即上锁
 - 不要用树莓派 5V 给锁供电（Pi 5 对外供电有限，锁瞬时电流大，会重启）
-- 若用自保持锁（脉冲开锁/落锁），改 `lock.py` 为短脉冲输出即可
+- 派 5 必须用 5V/5A 级电源（锁挂同一 5V 轨；PD 充电宝 5V/3A 档实测开锁欠压黑屏）
 
 ## 实体开锁按键（可选）
 
 轻触按键一端接 **GPIO27（物理 13 脚）**，另一端接 **GND（物理 6/9/14/20/25 任一）**，
 无需外部电阻（软件启用内部上拉）。按下 = 开锁，与扫码开锁同一流程：
-留痕 `button_unlock` + `auto_relock_seconds` 超时自动落锁。
+留痕 `button_unlock`；`auto_relock_seconds` 仅在未接反馈线时作状态估算。
 在 `config.yaml` 删除 `lock.button_gpio` 行即可停用。
 注意：按键是无条件开锁，请装在只有宿管可及的位置（或仅作箱内应急逃生按钮）。
 
@@ -57,7 +57,7 @@ python scripts/download_model.py    # 下载 MobileNetV3 ONNX (~21MB) + 类别�
 | 键 | 说明 |
 |----|------|
 | `lock.gpio_pin` | BCM 引脚号，默认 17 |
-| `lock.auto_relock_seconds` | 开锁后自动落锁秒数，默认 60 |
+| `lock.pulse_seconds` / `lock.feedback_gpio` | 开锁脉冲秒数(0.6) / 状态反馈 GPIO(26)；`auto_relock_seconds` 仅无反馈线时估算用 |
 | `lock.mock` | Windows/无 GPIO 环境调试设 `true` |
 | `security.secret` | 与后端共享的 HMAC 密钥，**必须修改** |
 | `backend.base_url` | 小程序后端地址；留空=只开本地 API |
@@ -83,7 +83,8 @@ journalctl -u fridge-pi -f          # 看日志
 | GET | `/healthz` | 存活检查 |
 | GET | `/api/status` | 当前锁状态 |
 | POST | `/api/unlock` | `{code, ts, token}` 校验令牌并开锁 |
-| POST | `/api/lock` | 手动落锁（宿管） |
+| POST | `/api/lock` | 手动切断开锁脉冲（宿管） |
+| GET | `/api/door_status` | 锁状态/反馈线/一次开合门事件（触控屏确认页与门未关横幅用） |
 | POST | `/api/capture` | 拍照 → 二维码解码 + 分类建议 |
 | POST | `/api/items` | 触控屏确认后保存入库记录 |
 | GET | `/photos/{name}` | 查看拍摄照片 |
