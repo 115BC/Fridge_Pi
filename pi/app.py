@@ -34,6 +34,12 @@ classifier = LocalClassifier()
 printer = LabelPrinter(CFG["printer"]["name"])
 button = None
 last_unlock: dict = {"code": "", "at": 0.0}   # 供触控屏取出页确认开锁已执行
+door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False}   # 反馈线监控：一次真实开合门
+
+
+def mark_unlocked(code: str):
+    last_unlock.update({"code": code, "at": time.time()})
+    door_watch.update(unlocked_at=time.time(), cycle_done=False)
 
 
 def log_event(event: str, code: str, detail: str = ""):
@@ -62,7 +68,7 @@ async def do_unlock(code: str, ts: int, token: str) -> dict:
     verify_token(code, ts, token)
     was_locked = lock.is_locked
     lock.unlock()
-    last_unlock.update({"code": code, "at": time.time()})
+    mark_unlocked(code)
     log_event("unlock", code, "first" if was_locked else "again")
     return {"status": "unlocked", "code": code, "feedback": lock.has_feedback}
 
@@ -109,6 +115,7 @@ async def button_press():
     """实体按键按下：脉冲开锁（新锁关门自动回锁，状态以蓝白反馈线为准）。"""
     was_locked = lock.is_locked
     lock.unlock()
+    mark_unlocked("button")
     log_event("button_unlock", "button", "first" if was_locked else "again")
 
 
@@ -132,6 +139,20 @@ def setup_button():
         print(f"[button] gpiozero 不可用，按键停用: {e}")
 
 
+async def watch_door():
+    """反馈线监控：开锁脉冲后若检测到锁舌重新压回（门被关好），记为一次真实开合门。"""
+    while True:
+        try:
+            if (lock.has_feedback and door_watch["unlocked_at"]
+                    and not door_watch["cycle_done"] and lock.is_locked
+                    and time.time() - door_watch["unlocked_at"] > 2):
+                door_watch["cycle_done"] = True
+                log_event("door_cycle", last_unlock.get("code", ""), "检测到门开过又关回")
+        except Exception as e:
+            print(f"[door] 监控异常: {e}")
+        await asyncio.sleep(0.5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = None
@@ -140,11 +161,13 @@ async def lifespan(app: FastAPI):
         print(f"[poll] 已启用后端轮询 -> {CFG['backend']['base_url']}")
     else:
         print("[poll] 未配置 backend.base_url，仅提供本地 API")
+    door_task = asyncio.create_task(watch_door())
     lock.lock()
     setup_button()
     yield
     if task:
         task.cancel()
+    door_task.cancel()
     await stop_preview()
 
 
@@ -497,6 +520,13 @@ async def takeout_confirm(req: TakeoutConfirmReq):
 @app.get("/api/last_unlock")
 def read_last_unlock():
     return last_unlock
+
+
+@app.get("/api/door_status")
+def read_door_status():
+    """触控屏用：是否有反馈线、当前是否上锁、最近一次开锁时刻、是否已完成一次开合门。"""
+    return {"has_feedback": lock.has_feedback, "is_locked": lock.is_locked,
+            "unlocked_at": door_watch["unlocked_at"], "cycle_done": door_watch["cycle_done"]}
 
 
 if __name__ == "__main__":

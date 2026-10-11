@@ -143,9 +143,9 @@
   </div>
 </div>
 
+<div id="doorAlarm" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99;background:#c0392b;color:#fff;text-align:center;padding:10px;font-size:22px">⚠ 冰箱门未关好（锁舌未复位），请关严箱门</div>
 <script>
-const IDLE_MS = 90000;   // 无人操作 90 秒后回到待机屏并关闭摄像头
-const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
+const IDLE_MS = 90000;   // 无人操作 90 秒后回到待机屏并关闭摄像头const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
                  "饮料":500, "零食熟食":150, "餐盒剩菜":800, "其他":300 };
 
 let scr = "standby", state = { photo: "", qr: [], guessCategory: "", category: "" };
@@ -368,7 +368,7 @@ document.getElementById("saveBtn").onclick = async () => {
     document.getElementById("name").value = "";
     const extra = d.status === "pending_claim" ? "（物品已入待认领区，学生可扫码认领）" : "";
     await waitUnlock(d.code, "storeMsg",
-      `标签 ${d.code} 已打印 · 已开锁，请放入物品并贴好标签${extra}（约 60 秒后自动上锁）`, sentAt);
+      `标签 ${d.code} 已打印 · 已开锁，请放入物品并贴好标签${extra}，放好后关严箱门`, sentAt);
     session = null; loginTicket = "";   // 登记完成立即登出，防止下一人冒用身份
     setTimeout(goHome, 8000);
   } catch (e) { setMsg("storeMsg", "登记失败：" + e.message, false); }
@@ -429,7 +429,7 @@ async function renderMyItems() {
       b.onclick = async () => {
         if (takeBusy.v) return;
         takeBusy.v = true;
-        const r = await unlockByCode(it.code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+        const r = await unlockByCode(it.code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
         if (r.done) showConfirm(it.code, it.name);
       };
       list.appendChild(b);
@@ -461,33 +461,55 @@ document.getElementById("takeBtn").onclick = async () => {
   const code = document.getElementById("takeCode").value.trim();
   if (!code) return setMsg("takeMsg", "请输入或扫描标签编码", false);
   takeBusy.v = true;
-  const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并关门（约 60 秒后自动上锁）", takeBusy);
+  const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
   if (r.done) showConfirm(code, r.name);
 };
 
-/* ---------- 取出结果确认页：60 秒无操作默认"已取出" ---------- */
-let confirmTimer = null, confirmLeft = 0, confirmCode = "";
-function showConfirm(code, name) {
-  confirmCode = code; confirmLeft = 60;
-  show("confirm");
-  document.getElementById("cfmTitle").textContent = name ? `「${name}」 ${code}` : `编码 ${code}`;
+/* ---------- 取出结果确认页：有反馈线按真实开合门判定；无反馈线退回 60 秒倒计时 ---------- */
+let confirmTimer = null, confirmLeft = 0, confirmCode = "", cfmPoll = null, cfmWaited = 0;
+function legacyCfmTimer() {
   tickCfm();
-  clearInterval(confirmTimer);
   confirmTimer = setInterval(() => {
     confirmLeft--; tickCfm();
     if (confirmLeft <= 0) finishConfirm(true);
   }, 1000);
 }
+function showConfirm(code, name) {
+  confirmCode = code; confirmLeft = 60; cfmWaited = 0;
+  show("confirm");
+  document.getElementById("cfmTitle").textContent = name ? `「${name}」 ${code}` : `编码 ${code}`;
+  clearInterval(confirmTimer); clearInterval(cfmPoll);
+  confirmTimer = null; cfmPoll = null;
+  fetch("/api/door_status").then(r => r.json()).then(st => {
+    if (st.has_feedback) {
+      document.getElementById("cfmCount").textContent = "取出物品后请随手关严箱门（检测到门已关好会自动完成）";
+      cfmPoll = setInterval(tickCfmDoor, 1000);
+    } else {
+      legacyCfmTimer();
+    }
+  }).catch(legacyCfmTimer);
+}
+async function tickCfmDoor() {
+  cfmWaited++;
+  try {
+    const s = await (await fetch("/api/door_status")).json();
+    if (s.cycle_done) { finishConfirm(true, "已检测到箱门关好，取出登记完成"); return; }
+  } catch (e) {}
+  document.getElementById("cfmCount").textContent =
+    `取出物品后请随手关严箱门（检测到门已关好会自动完成）· 已等待 ${cfmWaited} 秒`;
+  if (cfmWaited >= 120) finishConfirm(false, "未检测到开门取物，物品继续在库");
+}
 function tickCfm() {
   document.getElementById("cfmCount").textContent =
     `本页保持 ${confirmLeft} 秒，超时默认按"已取出"登记`;
 }
-async function finishConfirm(taken) {
+async function finishConfirm(taken, msg) {
   if (!confirmCode) return;
-  clearInterval(confirmTimer); confirmTimer = null;
+  clearInterval(confirmTimer); clearInterval(cfmPoll);
+  confirmTimer = null; cfmPoll = null;
   const code = confirmCode; confirmCode = "";
   try { await post("/api/takeout_confirm", { code, taken }); } catch (e) {}
-  setMsg("takeMsg", taken ? "已登记取出，台账归档" : "好的，物品继续在库", true);
+  setMsg("takeMsg", msg || (taken ? "已登记取出，台账归档" : "好的，物品继续在库"), true);
   goHome();
 }
 
@@ -495,6 +517,15 @@ async function finishConfirm(taken) {
 window.addEventListener("pagehide", () => {
   if (liveOn) fetch("/api/preview/stop", { method: "POST", keepalive: true });
 });
+
+/* 全局门未关告警条（任何页面都可见，依赖蓝白反馈线） */
+setInterval(async () => {
+  try {
+    const s = await (await fetch("/api/door_status")).json();
+    document.getElementById("doorAlarm").style.display =
+      (s.has_feedback && !s.is_locked) ? "block" : "none";
+  } catch (e) {}
+}, 5000);
 
 /* 初始进入待机屏（不占用摄像头） */
 goStandby();
