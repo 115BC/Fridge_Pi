@@ -25,11 +25,13 @@ EVENTS_FILE = BASE_DIR / "data" / "events.jsonl"
 ITEMS_FILE = BASE_DIR / "data" / "items.jsonl"
 VERSION = "1.3"
 
-lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"])
+lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
+                           feedback_pin=CFG["lock"].get("feedback_gpio"),
+                           pulse_seconds=CFG["lock"].get("pulse_seconds", 1.0),
+                           relock_estimate=CFG["lock"].get("auto_relock_seconds", 60))
 camera = Camera(mock=CFG["camera"]["mock"])
 classifier = LocalClassifier()
 printer = LabelPrinter(CFG["printer"]["name"])
-relock_task: asyncio.Task | None = None
 button = None
 last_unlock: dict = {"code": "", "at": 0.0}   # 供触控屏取出页确认开锁已执行
 
@@ -56,34 +58,13 @@ def verify_token(code: str, ts: int, token: str) -> None:
         raise HTTPException(400, "令牌校验失败")
 
 
-async def schedule_relock(code: str):
-    global relock_task
-    if relock_task:
-        relock_task.cancel()
-    seconds = CFG["lock"]["auto_relock_seconds"]
-
-    async def _relock():
-        await asyncio.sleep(seconds)
-        lock.lock()
-        log_event("auto_relock", code)
-
-    relock_task = asyncio.create_task(_relock())
-
-
-class UnlockRequest(BaseModel):
-    code: str
-    ts: int
-    token: str
-
-
 async def do_unlock(code: str, ts: int, token: str) -> dict:
     verify_token(code, ts, token)
     was_locked = lock.is_locked
     lock.unlock()
-    await schedule_relock(code)
     last_unlock.update({"code": code, "at": time.time()})
     log_event("unlock", code, "first" if was_locked else "again")
-    return {"status": "unlocked", "code": code, "auto_relock_seconds": CFG["lock"]["auto_relock_seconds"]}
+    return {"status": "unlocked", "code": code, "feedback": lock.has_feedback}
 
 
 async def poll_backend():
@@ -118,11 +99,16 @@ async def poll_backend():
             await asyncio.sleep(interval)
 
 
+class UnlockRequest(BaseModel):
+    code: str
+    ts: int
+    token: str
+
+
 async def button_press():
-    """实体按键按下：与登记开锁走同一套流程（留痕 + 超时自动落锁）。"""
+    """实体按键按下：脉冲开锁（新锁关门自动回锁，状态以蓝白反馈线为准）。"""
     was_locked = lock.is_locked
     lock.unlock()
-    await schedule_relock("button")
     log_event("button_unlock", "button", "first" if was_locked else "again")
 
 
@@ -182,9 +168,6 @@ async def unlock(req: UnlockRequest):
 
 @app.post("/api/lock")
 async def manual_lock():
-    global relock_task
-    if relock_task:
-        relock_task.cancel()
     lock.lock()
     log_event("manual_lock", "")
     return {"status": "locked"}
