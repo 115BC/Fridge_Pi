@@ -145,10 +145,11 @@
 
 <div id="doorAlarm" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99;background:#c0392b;color:#fff;text-align:center;padding:10px;font-size:22px">⚠ 冰箱门未关好（锁舌未复位），请关严箱门</div>
 <script>
-const IDLE_MS = 90000;   // 无人操作 90 秒后回到待机屏并关闭摄像头const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
+const IDLE_MS = 90000;   // 无人操作 90 秒后回主页并登出、关闭摄像头
+const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
                  "饮料":500, "零食熟食":150, "餐盒剩菜":800, "其他":300 };
 
-let scr = "standby", state = { photo: "", qr: [], guessCategory: "", category: "" };
+let scr = "home", state = { photo: "", qr: [], guessCategory: "", category: "" };
 let liveOn = false, idleTimer = null;
 
 /* ---------- 屏幕切换 ---------- */
@@ -160,13 +161,13 @@ function show(name) {
   if (name !== "store" && name !== "take" && name !== "confirm" && liveOn) stopPreview();   // 离开操作屏即释放摄像头
   poke();
 }
-function goStandby() { session = null; show("standby"); }   // 公共屏幕：闲置即登出
+function goStandby() { session = null; loginTicket = ""; show("home"); }   // 无独立待机页：闲置/退出即回主页并登出
 function goHome() { show("home"); }
 
 /* ---------- 待机计时：任何操作都续命，超时关摄像头回待机 ---------- */
 function poke() {
   clearTimeout(idleTimer);
-  if (scr !== "standby") idleTimer = setTimeout(goStandby, IDLE_MS);
+  idleTimer = setTimeout(goStandby, IDLE_MS);   // 主页闲置同样会登出
 }
 ["click", "touchstart", "keydown", "input"].forEach(ev =>
   document.addEventListener(ev, poke, { passive: true }));
@@ -378,7 +379,7 @@ document.getElementById("saveBtn").onclick = async () => {
 /* ---------- 开锁等待（登记/取出共用） ---------- */
 async function waitUnlock(code, msgId, doneMsg, sentAt) {
   let done = false;
-  for (let i = 0; i < 40 && scr !== "standby"; i++) {   // Pi 轮询后端约 2 秒一次
+  for (let i = 0; i < 40 && scr !== "home"; i++) {   // Pi 轮询后端约 2 秒一次
     await new Promise(r => setTimeout(r, 500));
     try {
       const lu = await (await fetch("/api/last_unlock")).json();
@@ -528,7 +529,7 @@ setInterval(async () => {
 }, 5000);
 
 /* 初始进入待机屏（不占用摄像头） */
-goStandby();
+goHome();   // 无待机页：开机即主页（存入/取出选择）
 </script>
 </body>
 </html>
