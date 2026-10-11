@@ -389,7 +389,8 @@ async def save_item(rec: ItemRecord):
 @app.get("/kiosk")
 async def kiosk_page():
     from fastapi.responses import FileResponse
-    return FileResponse(BASE_DIR / "static" / "kiosk.html")
+    return FileResponse(BASE_DIR / "static" / "kiosk.html",
+                        headers={"Cache-Control": "no-store"})   # 防 chromium 用旧缓存页
 
 
 class UnlockCodeReq(BaseModel):
