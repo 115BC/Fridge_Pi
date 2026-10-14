@@ -483,7 +483,17 @@ async def register_item(req: RegisterItemReq):
         except Exception:
             detail = f"HTTP {r.status_code}"
         raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
-    return r.json()
+    d = r.json()
+    if d.get("print") not in ("queued", "printed") and d.get("code"):
+        # 后端在云端够不到派本机 /api/print -> 派自己把标签打出来
+        try:
+            out = printer.print_label(d["code"], req.name, req.expire_at)
+            log_event("print_label", d["code"], out.name)
+            d["print"] = "printed" if not printer.mock else "rendered_only"
+        except Exception as e:
+            log_event("print_fail", d.get("code", ""), str(e))
+            d["print"] = "failed"
+    return d
 
 
 class TakeoutConfirmReq(BaseModel):
@@ -506,15 +516,6 @@ async def takeout_confirm(req: TakeoutConfirmReq):
             detail = f"HTTP {r.status_code}"
         raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
     d = r.json()
-    if d.get("print") not in ("queued", "printed"):
-        # 后端在云端够不到派本机 /api/print -> 派自己把标签打出来
-        try:
-            out = printer.print_label(d["code"], req.name, req.expire_at)
-            log_event("print_label", d["code"], out.name)
-            d["print"] = "printed" if not printer.mock else "rendered_only"
-        except Exception as e:
-            log_event("print_fail", d.get("code", ""), str(e))
-            d["print"] = "failed"
     return d
 
 
