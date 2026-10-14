@@ -44,6 +44,7 @@
     </view>
     <view wx:if="{{view==='active'}}" class="row gap" style="margin-top:12rpx">
       <button class="btn btn-ghost flex1" bindtap="scanUnlock">扫标签二维码开锁</button>
+      <button class="btn btn-ghost flex1" bindtap="scanLogin">扫屏幕登录码·代登记</button>
     </view>
     <view wx:if="{{unlockTip}}" class="unlock unlock-{{unlockColor}}" style="margin-top:12rpx">{{unlockTip}}</view>
 

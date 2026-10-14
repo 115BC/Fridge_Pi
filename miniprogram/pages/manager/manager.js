@@ -181,6 +181,19 @@ Page({
     api.post(`/api/v1/items/${code}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
       .catch(err => wx.showToast({ title: '开锁失败:' + (err.data && err.data.detail || err.statusCode), icon: 'none' }))
   },
+  // 冰箱触控屏扫码登录：屏幕出码后来这里确认身份，之后在屏幕上代登记（宿管/超管登记自动进待认领区并打印标签）
+  scanLogin() {
+    wx.scanCode({
+      success: res => {
+        const m = (res.result || '').match(/fridge-login:([0-9a-zA-Z]+)/)
+        if (!m) return wx.showToast({ title: '这不是屏幕登录码', icon: 'none' })
+        api.post('/api/v1/kiosk/login/confirm', { ticket: m[1] }).then(d => {
+          wx.showToast({ title: '已登录冰箱屏幕(' + d.name + ')，请在屏幕上登记', icon: 'none', duration: 3000 })
+        }).catch(err => wx.showToast({ title: '登录失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      },
+      fail: () => {}
+    })
+  },
   scanUnlock() {
     wx.scanCode({
       success: res => {
