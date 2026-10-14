@@ -83,7 +83,6 @@ class LabelPrinter:
         d.text((x, int(H * 0.12)), t1, fill="black", font=f1)
         d.text((x, int(H * 0.42)), t2, fill="black", font=f2)
         d.text((x, int(H * 0.66)), t3, fill="black", font=f3)
-        d.rectangle([0, 0, W - 1, H - 1], outline="black")
         return label
 
     def _send_tspl(self, img):
