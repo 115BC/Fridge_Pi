@@ -524,21 +524,40 @@ window.addEventListener("pagehide", () => {
   if (liveOn) fetch("/api/preview/stop", { method: "POST", keepalive: true });
 });
 
-/* 单指拖动=滚动（kiosk 触摸管线不触发原生滚动时的确定性方案；输入框内不拦截） */
-let _touchY = null;
-document.addEventListener("touchstart", e => {
-  if (e.touches.length === 1) _touchY = e.touches[0].clientY;
-}, { passive: true });
-document.addEventListener("touchmove", e => {
+/* 单指/鼠标拖动=滚动：这块触摸屏在 kiosk 下按鼠标上报，touch 事件收不到，统一用 pointer 事件 */
+let _py = null, _pmoved = 0, _suppressClick = false;
+document.addEventListener("pointerdown", e => {
+  if (e.target === document.documentElement) return;   // 滚动条上的操作交给原生
+  _py = e.clientY; _pmoved = 0;
+});
+document.addEventListener("pointermove", e => {
+  if (_py === null) return;
   const t = e.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-  if (_touchY === null || e.touches.length !== 1) return;
+  const dy = _py - e.clientY;
+  if (Math.abs(dy) > 1) {
+    window.scrollBy(0, dy);
+    _pmoved += Math.abs(dy);
+    _py = e.clientY;
+  }
+});
+document.addEventListener("pointerup", () => {
+  if (_pmoved > 12) _suppressClick = true;   // 拖动后松手不算点击
+  _py = null;
+});
+document.addEventListener("click", e => {
+  if (_suppressClick) { e.stopPropagation(); e.preventDefault(); _suppressClick = false; }
+}, true);
+document.addEventListener("touchstart", e => {
+  if (e.touches.length === 1) _py = e.touches[0].clientY;
+}, { passive: true });
+document.addEventListener("touchmove", e => {
+  if (_py === null || e.touches.length !== 1) return;
   const y = e.touches[0].clientY;
-  window.scrollBy(0, _touchY - y);
-  _touchY = y;
+  window.scrollBy(0, _py - y); _py = y;
   e.preventDefault();
 }, { passive: false });
-document.addEventListener("touchend", () => { _touchY = null; }, { passive: true });
+document.addEventListener("touchend", () => { _py = null; }, { passive: true });
 
 /* 全局门未关告警条（任何页面都可见，依赖蓝白反馈线） */
 setInterval(async () => {
