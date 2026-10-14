@@ -70,13 +70,13 @@ class LabelPrinter:
 
         W, H = self.W, self.H
         qr_side = int(H * 0.70)
-        mx = int(W * 0.02)
+        mx = int(W * 0.015)
         qr = qrcode.make(code).resize((qr_side, qr_side))
         label = Image.new("RGB", (W, H), "white")
         label.paste(qr, (mx, (H - qr_side) // 2))
         d = ImageDraw.Draw(label)
-        x = mx + qr_side + int(W * 0.03)
-        avail = W - x - 26          # 右侧留打印盲区
+        x = mx + qr_side + int(W * 0.025)
+        avail = W - x - 12          # 右侧留少量打印盲区(边框已去,可收紧)
         t1, f1 = self._fit_font(code, avail, int(H * 0.12))
         t2, f2 = self._fit_font((name or "").strip() or "未命名", avail, int(H * 0.10))
         t3, f3 = self._fit_font(f"到期 {expire_at[:10]}", avail, int(H * 0.09))
