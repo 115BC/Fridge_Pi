@@ -6,7 +6,12 @@
 <title>宿舍冰箱 · 触控屏</title>
 <style>
   * { box-sizing: border-box; margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
-  body { background: #f4f6f8; padding: 16px; }
+  body { background: #f4f6f8; padding: 16px;
+         -webkit-user-select: none; user-select: none;          /* 禁拖动划词 */
+         -webkit-touch-callout: none;                            /* 禁长按呼出菜单 */
+         touch-action: manipulation;                             /* 触摸=点按+滚动，禁双击缩放 */
+         -webkit-tap-highlight-color: transparent; }             /* 去掉点按灰块 */
+  input, textarea { -webkit-user-select: text; user-select: text; touch-action: auto; }
   h1 { font-size: 22px; margin-bottom: 12px; }
   .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px;
           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
@@ -50,7 +55,7 @@
   .volhint { font-size: 14px; color: #888; margin: -4px 0 10px; }
 </style>
 </head>
-<body>
+<body oncontextmenu="return false">
 
 <!-- 待机屏 -->
 <div id="scr-standby" class="hidden">
