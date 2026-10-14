@@ -12,13 +12,17 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 LABEL_DIR = BASE_DIR / "data" / "labels"
 TSPL_DEV = "/dev/usb/lp0"
-# 203dpi 原生：40x30mm = 320x240 点
-W, H = 320, 240
+DOTS_PER_MM = 8          # 203dpi ≈ 8 点/毫米
+DEFAULT_MM = (40, 30)
 
 
 class LabelPrinter:
-    def __init__(self, printer_name: str = ""):
+    def __init__(self, printer_name: str = "", label_mm=None):
         self.printer_name = printer_name
+        w_mm, h_mm = label_mm or DEFAULT_MM
+        self.w_mm, self.h_mm = int(w_mm), int(h_mm)
+        self.W = self.w_mm * DOTS_PER_MM
+        self.H = self.h_mm * DOTS_PER_MM
         self.dev = TSPL_DEV if Path(TSPL_DEV).exists() else ""
         self.cups = bool(printer_name) and shutil.which("lp") is not None
         self.mock = not (self.dev or self.cups)
@@ -39,23 +43,46 @@ class LabelPrinter:
             print(f"[printer] CUPS 已打印标签 {code}")
         return out
 
+    def _fit_font(self, text: str, avail_px: int, size: int):
+        """从指定字号往下缩，直到文字实际宽度放得下；缩到 12 仍放不下才截断。"""
+        from PIL import ImageFont
+        while size > 12:
+            f = self._font(size)
+            if f.getlength(text) <= avail_px:
+                return text, f
+            size -= 1
+        f = self._font(size)
+        while len(text) > 2 and f.getlength(text) > avail_px:
+            text = text[:-1]
+        return text, f
+
+    @staticmethod
+    def _font(size: int):
+        from PIL import ImageFont
+        try:
+            return ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", size)
+        except OSError:
+            return ImageFont.load_default()
+
     def _render(self, code: str, name: str, expire_at: str):
         import qrcode
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
 
-        qr = qrcode.make(code).resize((180, 180))
+        W, H = self.W, self.H
+        qr_side = int(H * 0.74)
+        mx = int(W * 0.03)
+        qr = qrcode.make(code).resize((qr_side, qr_side))
         label = Image.new("RGB", (W, H), "white")
-        label.paste(qr, (12, (H - 180) // 2))
+        label.paste(qr, (mx, (H - qr_side) // 2))
         d = ImageDraw.Draw(label)
-        try:
-            f_big = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 28)
-            f_small = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 20)
-        except OSError:
-            f_big = f_small = ImageFont.load_default()
-        x = 204
-        d.text((x, 34), code, fill="black", font=f_big)
-        d.text((x, 92), (name or "")[:8], fill="black", font=f_small)
-        d.text((x, 140), f"到期 {expire_at[:10]}", fill="black", font=f_small)
+        x = mx + qr_side + int(W * 0.04)
+        avail = W - x - 8
+        t1, f1 = self._fit_font(code, avail, int(H * 0.12))
+        t2, f2 = self._fit_font((name or "").strip() or "未命名", avail, int(H * 0.10))
+        t3, f3 = self._fit_font(f"到期 {expire_at[:10]}", avail, int(H * 0.09))
+        d.text((x, int(H * 0.12)), t1, fill="black", font=f1)
+        d.text((x, int(H * 0.42)), t2, fill="black", font=f2)
+        d.text((x, int(H * 0.66)), t3, fill="black", font=f3)
         d.rectangle([0, 0, W - 1, H - 1], outline="black")
         return label
 
@@ -63,6 +90,7 @@ class LabelPrinter:
         """PIL 图 → TSPL BITMAP 指令。位=1 表示不打印（白），0 打印（黑）。"""
         g = img.convert("L")
         px = g.load()
+        W, H = self.W, self.H
         wbytes = W // 8
         buf = bytearray()
         for y in range(H):
@@ -72,7 +100,7 @@ class LabelPrinter:
                     if px[xb * 8 + b, y] > 128:
                         byte |= 0x80 >> b
                 buf.append(byte)
-        cmd = (b"SIZE 40 mm,30 mm\r\nGAP 2 mm,0\r\nDIRECTION 0\r\nCLS\r\n"
+        cmd = (f"SIZE {self.w_mm} mm,{self.h_mm} mm\r\nGAP 2 mm,0\r\nDIRECTION 0\r\nCLS\r\n".encode()
                + f"BITMAP 0,0,{wbytes},{H},0,".encode()
                + bytes(buf) + b"\r\nPRINT 1,1\r\n")
         with open(self.dev, "wb") as f:

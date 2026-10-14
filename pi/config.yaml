@@ -9,7 +9,8 @@ camera:
   mock: false             # 无 libcamera-still 时自动模拟，无需手动开
 
 printer:
-  name: ""                # CUPS 打印机名(lpstat -p 查看)；留空=只生成标签PNG不打印
+  name: ""                # CUPS 打印机名；留空=只生成标签PNG不打印
+  label_mm: [60, 40]      # 标签纸实际规格(毫米)，版式按比例塞满
 
 security:
   secret: "change-me"     # 与后端约定的签名密钥，务必修改

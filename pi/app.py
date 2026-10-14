@@ -31,7 +31,7 @@ lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
                            relock_estimate=CFG["lock"].get("auto_relock_seconds", 60))
 camera = Camera(mock=CFG["camera"]["mock"])
 classifier = LocalClassifier()
-printer = LabelPrinter(CFG["printer"]["name"])
+printer = LabelPrinter(CFG["printer"]["name"], label_mm=CFG["printer"].get("label_mm", [40, 30]))
 button = None
 last_unlock: dict = {"code": "", "at": 0.0}   # 供触控屏取出页确认开锁已执行
 door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False}   # 反馈线监控：一次真实开合门
