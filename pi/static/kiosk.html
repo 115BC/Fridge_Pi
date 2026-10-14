@@ -524,6 +524,22 @@ window.addEventListener("pagehide", () => {
   if (liveOn) fetch("/api/preview/stop", { method: "POST", keepalive: true });
 });
 
+/* 单指拖动=滚动（kiosk 触摸管线不触发原生滚动时的确定性方案；输入框内不拦截） */
+let _touchY = null;
+document.addEventListener("touchstart", e => {
+  if (e.touches.length === 1) _touchY = e.touches[0].clientY;
+}, { passive: true });
+document.addEventListener("touchmove", e => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+  if (_touchY === null || e.touches.length !== 1) return;
+  const y = e.touches[0].clientY;
+  window.scrollBy(0, _touchY - y);
+  _touchY = y;
+  e.preventDefault();
+}, { passive: false });
+document.addEventListener("touchend", () => { _touchY = null; }, { passive: true });
+
 /* 全局门未关告警条（任何页面都可见，依赖蓝白反馈线） */
 setInterval(async () => {
   try {
