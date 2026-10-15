@@ -394,8 +394,8 @@ def request_unlock(code: str, user: dict = Depends(me_dep)):
     ts = int(time.time())
     token = sign_unlock(row["code"], ts, PI_SECRET)
     db.conn().execute(
-        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token) VALUES(?,?,?,?,?)",
-        (row["id"], row["fridge_id"], row["code"], ts, token))
+        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token,actor) VALUES(?,?,?,?,?,?)",
+        (row["id"], row["fridge_id"], row["code"], ts, token, user["openid"]))
     db.log_event("takeout_unlock", user["openid"], f"{row['code']} {row['name']}")
     return {"ok": True, "item_id": row["id"], "code": row["code"]}
 
@@ -972,8 +972,8 @@ async def kiosk_create_item(req: KioskItemReq, _: None = Depends(_pi_auth)):
     ts = int(time.time())
     token = sign_unlock(d["code"], ts, PI_SECRET)
     db.conn().execute(
-        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token) VALUES(?,?,?,?,?)",
-        (d["item_id"], req.fridge_id, d["code"], ts, token))
+        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token,actor) VALUES(?,?,?,?,?,?)",
+        (d["item_id"], req.fridge_id, d["code"], ts, token, user["openid"]))
     db.log_event("kiosk_add", user["openid"], f"{d['code']} {req.name} 开锁存入")
     return d
 
@@ -1032,8 +1032,8 @@ def kiosk_unlock(req: KioskUnlockReq, _: None = Depends(_pi_auth)):
     ts = int(time.time())
     token = sign_unlock(row["code"], ts, PI_SECRET)
     db.conn().execute(
-        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token) VALUES(?,?,?,?,?)",
-        (row["id"], row["fridge_id"], row["code"], ts, token))
+        "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token,actor) VALUES(?,?,?,?,?,?)",
+        (row["id"], row["fridge_id"], row["code"], ts, token, "kiosk"))
     db.log_event("kiosk_unlock", "kiosk", f"{row['code']} {row['name']}")
     return {"ok": True, "code": row["code"], "name": row["name"]}
 
@@ -1141,6 +1141,25 @@ def my_notifications(user: dict = Depends(me_dep)):
     return {"notifications": rs}
 
 
+@app.get("/api/v1/unlock_logs")
+def unlock_logs(limit: int = Query(50), _: dict = Depends(manager_dep)):
+    """开锁记录：谁在何时开了哪个物品（小程序发起带操作人，屏幕发起标"屏幕"）。"""
+    limit = max(1, min(200, limit))
+    rs = rows("SELECT uc.id, uc.code, uc.fridge_id, uc.status, uc.result_reason, "
+              "uc.created_at, uc.acked_at, uc.actor, "
+              "i.name AS item_name, u.name AS owner_name, u.room AS owner_room, "
+              "au.name AS actor_name, au.room AS actor_room "
+              "FROM unlock_commands uc "
+              "LEFT JOIN items i ON i.id=uc.item_id "
+              "LEFT JOIN users u ON u.id=i.user_id "
+              "LEFT JOIN users au ON au.openid=uc.actor "
+              "ORDER BY uc.id DESC LIMIT ?", (limit,))
+    for r in rs:
+        if not r["actor_name"]:
+            r["actor_name"] = "屏幕输码/扫码" if r["actor"] == "kiosk" else (r["actor"] or "屏幕输码/扫码")
+    return {"logs": rs}
+
+
 @app.get("/api/v1/admin/backup-rows")
 def admin_backup_rows(_: None = Depends(_pi_auth)):
     """每日冷备通道：仅 X-Pi-Secret 鉴权（不受迁移开关限制），供树莓派 cron 拉取存档。"""
@@ -1150,7 +1169,7 @@ def admin_backup_rows(_: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "ops-2026-10-10-1",
+    return {"ok": True, "build": "logs-2026-10-15-1",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 

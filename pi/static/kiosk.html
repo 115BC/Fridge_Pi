@@ -454,8 +454,14 @@ document.getElementById("scanBtn").onclick = async () => {
       res = await post("/api/capture");   // 取出屏默认不开预览，摄像头空闲可静拍
     }
     if (res.qr_codes.length) {
-      document.getElementById("takeCode").value = res.qr_codes[0];
-      setMsg("takeMsg", "已读取标签：" + res.qr_codes.join("，"), true);
+      const code = res.qr_codes[0].trim();
+      document.getElementById("takeCode").value = code;
+      setMsg("takeMsg", "已识别标签 " + code + "，直接开锁…", true);
+      if (!takeBusy.v) {
+        takeBusy.v = true;
+        const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
+        if (r.done) showConfirm(code, r.name);
+      }
     } else {
       setMsg("takeMsg", "未识别到二维码，请手动输入编码", false);
     }

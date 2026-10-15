@@ -288,6 +288,10 @@ def init():
             c.execute("ALTER TABLE items ADD COLUMN escalated INT DEFAULT 0")
         except Exception:
             pass
+        try:
+            c.execute("ALTER TABLE unlock_commands ADD COLUMN actor VARCHAR(64) DEFAULT ''")
+        except Exception:
+            pass
     else:
         with conn() as c:
             c.executescript(SCHEMA)
@@ -305,6 +309,10 @@ def init():
                 pass
             try:
                 c.execute("ALTER TABLE items ADD COLUMN escalated INTEGER DEFAULT 0")  # 超期未处理标记
+            except sqlite3.OperationalError:
+                pass
+            try:
+                c.execute("ALTER TABLE unlock_commands ADD COLUMN actor TEXT DEFAULT ''")  # 发起人(openid或kiosk)
             except sqlite3.OperationalError:
                 pass
     if not conn().execute("SELECT name FROM buildings LIMIT 1").fetchone():

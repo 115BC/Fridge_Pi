@@ -42,7 +42,6 @@
       </view>
       <view class="col">
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="showQr">取物码</view>
-        <view class="btn btn-ghost btn-sm act" data-code="{{item.code}}" data-id="{{item.id}}" bindtap="unlockItem">取出开锁</view>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="renameItem">改名</view>
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="markTaken">已取出</view>
       </view>

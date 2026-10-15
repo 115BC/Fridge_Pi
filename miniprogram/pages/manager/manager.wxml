@@ -10,6 +10,7 @@
   <view class="tabs">
     <view class="tab {{section==='items'?'on':''}}" data-s="items" bindtap="setSection">物品管理</view>
     <view class="tab {{section==='students'?'on':''}}" data-s="students" bindtap="setSection">学生管理</view>
+    <view class="tab {{section==='logs'?'on':''}}" data-s="logs" bindtap="setSection">开锁记录</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
   </view>
@@ -144,6 +145,15 @@
           <view wx:if="{{isAdmin}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="changeStudentBuilding">改楼</view>
         </view>
       </view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='logs'}}">
+    <view wx:if="{{logs.length===0}}" class="empty">暂无开锁记录</view>
+    <view wx:for="{{logs}}" wx:key="id" class="card item">
+      <view class="li-name">{{item.item_name || '未知物品'}} <text class="badge {{item.ok ? 'badge-green' : (item.bad ? 'badge-red' : 'badge-yellow')}}">{{item.status_label}}</text></view>
+      <view class="muted">{{item.created_at}} · 编码 {{item.code}} · 主人 {{item.owner_name || '未署名'}} {{item.owner_room || ''}}</view>
+      <view class="muted">操作人：{{item.actor_name}}{{item.actor_room ? '(' + item.actor_room + ')' : ''}} · 回执 {{item.acked_at || '-'}} {{item.result_reason ? '· ' + item.result_reason : ''}}</view>
     </view>
   </block>
 

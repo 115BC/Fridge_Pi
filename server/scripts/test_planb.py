@@ -261,6 +261,15 @@ bk = c.get(B + "/api/v1/admin/backup-rows", headers=PS).json()
 check("备份通道(派拉取)", bk.get("tables", {}).get("users") and len(bk["tables"]["users"]) >= 4)
 _db2.close()
 
+# 5.7 开锁记录：操作人归属与权限
+lg = c.get(B + "/api/v1/unlock_logs?limit=50", headers=H(mgr2["token"])).json()
+check("开锁记录接口(宿管可见)", lg.get("logs") and len(lg["logs"]) >= 1)
+ka = [x for x in lg["logs"] if x["code"] == code_a]
+check("记录含物品/主人/操作人", ka and ka[0]["item_name"] == "酸奶"
+      and ka[0]["owner_name"] == "小A" and ka[0]["actor_name"] == "小A", str(ka[0] if ka else lg)[:90])
+den_logs = c.get(B + "/api/v1/unlock_logs", headers=H(stu["token"]))
+check("学生查开锁记录被拒 403", den_logs.status_code == 403, str(den_logs.status_code))
+
 # 6. 心跳与锁状态
 hb = c.get(B + "/api/v1/debug/pi", headers=H(mgr["token"])).json()["pi_nodes"]
 check("Pi 心跳上报", hb and hb[0]["fridge_id"] == "fridge-01", str(hb))

@@ -101,31 +101,6 @@ Page({
     wx.requestSubscribeMessage({ tmplIds: [config.REMIND_TEMPLATE_ID], complete() {} })
   },
 
-  pollUnlock(itemId, tries = 0) {
-    if (tries === 0) this.setData({ unlockTip: '正在通知冰箱开锁…', unlockColor: 'yellow' })
-    if (tries > 20) { this.setData({ unlockTip: '开锁超时，请联系宿管', unlockColor: 'red' }); return }
-    api.get(`/api/v1/items/${itemId}/unlock`).then(d => {
-      if (d.status === 'unlocked') {
-        this.setData({ unlockTip: '冰箱已开锁，请取放物品并关门', unlockColor: 'green' })
-        setTimeout(() => this.setData({ unlockTip: '' }), 8000)
-      } else if (d.status === 'rejected') {
-        this.setData({ unlockTip: '开锁被拒绝:' + (d.result_reason || ''), unlockColor: 'red' })
-      } else if (d.status === 'expired') {
-        this.setData({ unlockTip: '开锁指令已过期，请重新发起', unlockColor: 'red' })
-      } else {
-        setTimeout(() => this.pollUnlock(itemId, tries + 1), 1500)
-      }
-    }).catch(() => setTimeout(() => this.pollUnlock(itemId, tries + 1), 1500))
-  },
-
-  // 取出开锁：凭标签编码发起（主人本人），复用轮询链路
-  unlockItem(e) {
-    this.askSub()
-    const { code, id } = e.currentTarget.dataset
-    api.post(`/api/v1/items/${code}/unlock`, {}).then(d => this.pollUnlock(d.item_id))
-      .catch(err => wx.showToast({ title: '开锁失败:' + (err.data && err.data.detail || err.statusCode), icon: 'none' }))
-  },
-
   // 取物码：把二维码显示在手机屏幕上，对准冰箱触控屏摄像头扫描开锁
   showQr(e) {
     this.askSub()

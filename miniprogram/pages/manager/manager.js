@@ -32,7 +32,7 @@ Page({
     buildings: [], pickerNames: [], building: wx.getStorageSync('mgr_building') || '',
     users: [], uq: '', roleOptions: ROLE_OPTIONS,
     students: [], sq: '',
-    pi_nodes: [], unlock_commands: [], events: [], reminders: []
+    pi_nodes: [], unlock_commands: [], events: [], reminders: [], logs: []
   },
   onShow() {
     if (!app.guard(['manager', 'admin'])) return
@@ -44,15 +44,17 @@ Page({
   onPullDownRefresh() {
     const p = this.data.section === 'items' ? this.load()
       : this.data.section === 'students' ? this.loadStudents()
+      : this.data.section === 'logs' ? this.loadLogs()
       : this.data.section === 'users' ? this.loadUsers() : this.loadDebug()
     p.then(() => wx.stopPullDownRefresh())
   },
   setSection(e) {
     const s = e.currentTarget.dataset.s
-    if (s !== 'items' && s !== 'students' && !this.data.isAdmin)
+    if (s !== 'items' && s !== 'students' && s !== 'logs' && !this.data.isAdmin)
       return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
     this.setData({ section: s })
     if (s === 'students') this.loadStudents()
+    if (s === 'logs') this.loadLogs()
     if (s === 'users') this.loadUsers()
     if (s === 'debug') this.loadDebug()
   },
@@ -417,6 +419,16 @@ Page({
         }).catch(() => wx.showToast({ title: '保存失败', icon: 'none' }))
       }
     })
+  },
+
+  // 开锁记录（宿管/超管可见：谁在何时开了哪个物品）
+  loadLogs() {
+    return api.get('/api/v1/unlock_logs?limit=50').then(d => {
+      const LBL = { pending: '待执行', dispatched: '下发中', unlocked: '已开锁', rejected: '被拒绝', expired: '已过期' }
+      const logs = d.logs.map(x => Object.assign(x, { status_label: LBL[x.status] || x.status,
+        ok: x.status === 'unlocked', bad: x.status === 'rejected' || x.status === 'expired' }))
+      this.setData({ logs })
+    }).catch(() => {})
   },
 
   // 系统调试（原超管能力）
