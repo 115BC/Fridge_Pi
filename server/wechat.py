@@ -56,24 +56,17 @@ class WeChat:
         _token_cache.update(token=d["access_token"], exp=time.time() + d.get("expires_in", 7200) - 300)
         return _token_cache["token"]
 
-    async def send_remind(self, openid: str, item_name: str, expire_at: str,
-                          color_label: str, page: str = "pages/student/student") -> tuple[bool, str]:
-        """到期提醒。模板字段：thing1 物品名称 / time2 过保日期 / number3 剩余天数 / thing5 温馨提示。"""
+    async def _send(self, openid: str, thing1: str, time2: str, number3: str,
+                    thing5: str, page: str = "pages/student/student") -> tuple[bool, str]:
+        """模板字段：thing1 名称 / time2 日期 / number3 数字 / thing5 提示。"""
         if self.dev_mode or not self.template_id:
-            return False, f"[dev] 应向 {openid} 推送：{item_name} {color_label}（到期 {expire_at}）"
-        from datetime import date, datetime
-        try:
-            exp = datetime.strptime(expire_at[:10], "%Y-%m-%d").date()
-        except ValueError:
-            exp = date.today()
-        days = (exp - date.today()).days
-        tip = f"已超期{-days}天，请尽快取出" if days < 0 else f"{color_label}，请及时取出"
+            return False, f"[dev] 应向 {openid} 推送：{thing1} {time2} {thing5}"
         token = await self.access_token()
         data = {
-            "thing1": {"value": item_name[:20]},
-            "time2": {"value": expire_at[:10]},
-            "number3": {"value": str(max(days, 0))},
-            "thing5": {"value": tip[:20]},
+            "thing1": {"value": (thing1 or "-")[:20]},
+            "time2": {"value": (time2 or "-")[:20]},
+            "number3": {"value": (number3 or "0")[:10]},
+            "thing5": {"value": (thing5 or "-")[:20]},
         }
         async with _client(8) as cl:
             r = await cl.post(f"{API}/cgi-bin/message/subscribe/send",
@@ -83,3 +76,39 @@ class WeChat:
             d = r.json()
         ok = d.get("errcode") == 0
         return ok, ("已推送" if ok else f"推送失败: {d}")
+
+    async def send_remind(self, openid: str, item_name: str, expire_at: str,
+                          color_label: str, page: str = "pages/student/student") -> tuple[bool, str]:
+        """到期提醒。"""
+        from datetime import date, datetime
+        try:
+            exp = datetime.strptime(expire_at[:10], "%Y-%m-%d").date()
+        except ValueError:
+            exp = date.today()
+        days = (exp - date.today()).days
+        tip = f"已超期{-days}天，请尽快取出" if days < 0 else f"{color_label}，请及时取出"
+        return await self._send(openid, item_name, expire_at[:10],
+                                str(max(days, 0)), tip, page)
+
+    async def send_queue(self, openid: str, item_name: str, when: str,
+                         position: int) -> tuple[bool, str]:
+        """满柜排队：冰箱空出后叫号。"""
+        return await self._send(openid, item_name, when, str(position),
+                                "冰箱已空出，请尽快到触控屏完成存入")
+
+    async def send_cleaned(self, openid: str, item_name: str, when: str) -> tuple[bool, str]:
+        """物品已被宿管清理。"""
+        return await self._send(openid, item_name, when, "0",
+                                "已被宿管清理，请联系宿管")
+
+    async def send_batch(self, openid: str, item_name: str, keep_until: str,
+                         overdue_days: int) -> tuple[bool, str]:
+        """超期提醒：存放至已过 N 天。"""
+        return await self._send(openid, item_name, keep_until, str(max(0, overdue_days)),
+                                "已过存放期，请尽快取出")
+
+    async def send_batch_mgr(self, openid: str, thing1: str, when: str, count: int,
+                             tip: str) -> tuple[bool, str]:
+        """宿管提醒（批次清理）。"""
+        return await self._send(openid, thing1, when, str(count), tip,
+                                page="pages/manager/manager")

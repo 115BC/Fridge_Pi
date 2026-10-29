@@ -9,13 +9,15 @@ Page({
     items: [],
     unlockTip: '', unlockColor: '',
     qrShow: false, qr: null,
-    adminContact: '', notices: []
+    adminContact: '', notices: [],
+    queue: null, locked: false
   },
   onShow() {
     if (!app.guard(['student'])) return
     this.setData({ role: wx.getStorageSync('role'), user: wx.getStorageSync('user') })
     this.loadMine()
     this.loadNotices()
+    this.loadQueue()
     api.request('/api/v1/buildings', 'GET', {}, false)
       .then(d => this.setData({ adminContact: d.admin_contact || '' }))
       .catch(() => {})
@@ -29,7 +31,26 @@ Page({
       this.setData({ notices })
     }).catch(() => {})
   },
-  onPullDownRefresh() { this.loadMine().then(() => wx.stopPullDownRefresh()) },
+  loadQueue() {
+    return api.get('/api/v1/queue/mine').then(d => {
+      this.setData({ queue: d.queue, locked: !!d.locked })
+    }).catch(() => {})
+  },
+  cancelQueue() {
+    wx.showModal({
+      title: '取消排队', content: '确定不再排队？清出空间后就不会提醒你了。',
+      success: r => {
+        if (!r.confirm) return
+        api.post('/api/v1/queue/mine/cancel', {}).then(() => {
+          wx.showToast({ title: '已取消排队', icon: 'success' })
+          this.loadQueue()
+        }).catch(() => wx.showToast({ title: '取消失败', icon: 'none' }))
+      }
+    })
+  },
+  onPullDownRefresh() {
+    Promise.all([this.loadMine(), this.loadQueue()]).then(() => wx.stopPullDownRefresh())
+  },
 
   // 修改姓名/寝室号（楼宇改动需超管，见下方提示）
   editProfile() {
@@ -78,7 +99,14 @@ Page({
         const m = (res.result || '').match(/fridge-login:([0-9a-zA-Z]+)/)
         if (!m) return wx.showToast({ title: '这不是屏幕登录码', icon: 'none' })
         api.post('/api/v1/kiosk/login/confirm', { ticket: m[1] }).then(d => {
-          wx.showToast({ title: '已登录冰箱屏幕(' + d.name + ')，可在屏幕上登记', icon: 'none' })
+          this.loadQueue().then(() => {
+            wx.showToast({
+              title: this.data.locked
+                ? '已登录：冰箱已满，请在屏幕上登记排队，清出后微信提醒你'
+                : '已登录冰箱屏幕(' + d.name + ')，请在屏幕上登记',
+              icon: 'none', duration: 3000
+            })
+          })
         }).catch(err => wx.showToast({ title: '登录失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
       },
       fail: () => {}
@@ -133,7 +161,7 @@ Page({
     })
   },
 
-  // 自我管理：取出登记 + 改名（到期日仅宿管可改）
+  // 自我管理：取出登记 + 改名（存放至仅超管可改）
   markTaken(e) {
     const { id, name } = e.currentTarget.dataset
     wx.showModal({

@@ -3,6 +3,7 @@
 """
 import io
 import time
+import uuid
 import httpx
 from qrcode import make as qr_make
 from PIL import Image
@@ -40,53 +41,76 @@ _db = sqlite3.connect(Path(__file__).resolve().parent.parent / "data" / "fridge.
 _db.execute("UPDATE users SET role='admin' WHERE openid IN ('dev_dev:mgrA','dev_mgrA')")
 _db.execute("INSERT OR IGNORE INTO users(openid,name,room,role) VALUES('dev_dev:mgrB','李宿管','值班室2','manager')")
 _db.execute("UPDATE users SET role='manager' WHERE openid='dev_dev:mgrB'")
+# 复位小D：上一轮可能已绑楼/已建物品，否则"绑定必选楼宇"用例会因持久库状态而失真
+_db.execute("DELETE FROM items WHERE user_id IN (SELECT id FROM users WHERE openid='dev_dev:stuD')")
+_db.execute("DELETE FROM users WHERE openid='dev_dev:stuD'")
+# 复位上锁/排队/呼叫与存放天数，保证本轮断言可重复
+_db.execute("DELETE FROM queue")
+_db.execute("DELETE FROM calls")
+_db.execute("DELETE FROM settings WHERE key LIKE 'fridge_locked:%'")
+_db.execute("DELETE FROM settings WHERE key='storage_days'")
 _db.commit(); _db.close()
 mgr = login("dev:mgrA", name="王超管", room="值班室", building="主楼")
 mgr2 = login("dev:mgrB", name="李宿管", room="值班室2", building="主楼")
 
-# 1. 屏幕扫码登录 -> 触控屏拍照登记（归属本人）-> 打印 -> 自动开锁
+# 1. 屏幕扫码登录 -> 触控屏登记（只建待入库台账+打印）-> 扫码确认入库 -> 开锁
 import datetime, yaml
 _pisec = yaml.safe_load(open(Path(__file__).resolve().parent.parent / "config.yaml", encoding="utf-8"))["security"]["pi_secret"]
 PS = {"X-Pi-Secret": _pisec}
+_today = datetime.date.today()
+_k = (_today - datetime.date(2026, 1, 1)).days % 16
+exp_batch = _k + 1 if _k < 8 else _k + 3
+exp_keep = (_today + datetime.timedelta(days=6)).isoformat()
 t = c.post(B + "/api/v1/kiosk/login/start", json={}, headers=PS).json()["ticket"]
 cf = c.post(B + "/api/v1/kiosk/login/confirm", json={"ticket": t}, headers=H(stu["token"]))
 check("屏幕登录码确认", cf.status_code == 200, str(cf.json()))
 st1 = c.get(B + "/api/v1/kiosk/login/status", params={"ticket": t}).json()
 check("登录状态 confirmed 且身份正确", st1["status"] == "confirmed" and st1["user"]["name"] == "小A", str(st1))
+check("登录状态带角色(满柜分流用)", st1["user"].get("role") == "student", str(st1))
 qr = c.get(B + "/api/v1/kiosk/login/qr", params={"ticket": t})
 check("登录二维码 PNG", qr.status_code == 200 and qr.content[:4] == b"\x89PNG")
-_soon = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
-r = c.post(B + "/api/v1/kiosk/items", json={"name": "酸奶", "expire_at": _soon,
+r = c.post(B + "/api/v1/kiosk/items", json={"name": "酸奶",
                                             "category": "奶制品", "login_ticket": t}, headers=PS).json()
 code_a, item_a = r["code"], r["item_id"]
-check("屏幕登记颜色=yellow", r.get("color") == "yellow", str(r))
+check("登记只建待入库(awaiting_scan)", r.get("status") == "awaiting_scan", str(r)[:120])
+check("登记批次编号/存放至", r.get("batch_no") == exp_batch and r.get("keep_until") == exp_keep,
+      f"{r.get('batch_no')}/{r.get('keep_until')}")
 check("登记触发打印(方案B)", r["print"] == "queued", f"print={r['print']}")
 mine = c.get(B + "/api/v1/items/mine", headers=H(stu["token"])).json()["items"]
-check("屏幕登记归属登录者", any(i["id"] == item_a for i in mine))
-bad = c.post(B + "/api/v1/kiosk/items", json={"name": "无主物", "expire_at": _soon, "login_ticket": ""}, headers=PS)
+check("未扫码确认前不在学生台账", not any(i["id"] == item_a for i in mine))
+un_pre = c.post(B + "/api/v1/kiosk/unlock", json={"code": code_a}, headers=PS)
+check("未确认入库不能开锁 400", un_pre.status_code == 400, str(un_pre.status_code))
+cf1 = c.post(B + f"/api/v1/kiosk/items/{code_a}/confirm-store", json={}, headers=PS).json()
+check("扫码确认入库转正式", cf1.get("ok") and cf1.get("status") == "active", str(cf1)[:90])
+mine = c.get(B + "/api/v1/items/mine", headers=H(stu["token"])).json()["items"]
+check("确认后归属登录者", any(i["id"] == item_a for i in mine))
+bad = c.post(B + "/api/v1/kiosk/items", json={"name": "无主物", "login_ticket": ""}, headers=PS)
 check("未屏幕登录被拒 400", bad.status_code == 400, str(bad.status_code))
 mi = c.get(B + "/api/v1/kiosk/my-items", params={"login_ticket": t}).json()
 check("屏幕我的物品列表", any(i["id"] == item_a for i in mi["items"]))
 
-# 2. 登记即下发开锁（人就在冰箱前）；再登记第二件供盘点
+# 2. 确认入库后下发开锁（人就在冰箱前）；再登记第二件供盘点
 st = {}
 for _ in range(15):
     st = c.get(B + f"/api/v1/items/{item_a}/unlock", headers=H(stu["token"])).json()
     if st["status"] in ("unlocked", "rejected", "expired"):
         break
     time.sleep(1)
-check("Pi 轮询执行开锁", st.get("status") == "unlocked", str(st))
+check("确认入库后 Pi 轮询执行开锁", st.get("status") == "unlocked", str(st))
 r2 = c.post(B + "/api/v1/kiosk/items", json={"name": "苹果",
-       "expire_at": (datetime.date.today() + datetime.timedelta(days=5)).isoformat(),
        "category": "水果", "login_ticket": t}, headers=PS).json()
 code_b, item_b = r2["code"], r2["item_id"]
+cf2 = c.post(B + f"/api/v1/kiosk/items/{code_b}/confirm-store", json={}, headers=PS).json()
+check("第二件扫码确认入库", cf2.get("status") == "active", str(cf2)[:80])
 
-# 2.5 宿管触控屏登记 -> 待认领区 -> 学生扫码认领（一人一主）
+# 2.5 宿管触控屏登记 -> 确认后进待认领区 -> 学生扫码认领（一人一主）
 t2 = c.post(B + "/api/v1/kiosk/login/start", json={}, headers=PS).json()["ticket"]
 c.post(B + "/api/v1/kiosk/login/confirm", json={"ticket": t2}, headers=H(mgr["token"]))
-r5 = c.post(B + "/api/v1/kiosk/items", json={"name": "无主牛奶", "expire_at": _soon,
+r5 = c.post(B + "/api/v1/kiosk/items", json={"name": "无主牛奶",
           "category": "奶制品", "login_ticket": t2}, headers=PS).json()
-check("宿管登记自动进待认领区", r5.get("status") == "pending_claim", str(r5))
+check("宿管登记先进待入库", r5.get("status") == "awaiting_scan", str(r5)[:80])
+cf5 = c.post(B + f"/api/v1/kiosk/items/{r5['code']}/confirm-store", json={}, headers=PS).json()
+check("宿管确认后进待认领区", cf5.get("status") == "pending_claim", str(cf5))
 cl = c.post(B + f"/api/v1/items/{r5['code']}/claim", json={}, headers=H(stu["token"])).json()
 check("学生扫码认领成功", cl.get("ok") and cl.get("name") == "无主牛奶", str(cl))
 mine2 = c.get(B + "/api/v1/items/mine", headers=H(stu["token"])).json()["items"]
@@ -126,10 +150,23 @@ check("清理留痕", r3.get("status") == "removed")
 # 4.5 学生自我管理 + 体积/容量/排序（双角色与新增能力）
 den4 = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "expire", "value": "2026-12-31"},
               headers=H(stu["token"]))
-check("学生改到期日被拒 403", den4.status_code == 403, str(den4.status_code))
+check("学生改存放至被拒 403", den4.status_code == 403, str(den4.status_code))
+den4b = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "expire", "value": "2026-12-31"},
+               headers=H(mgr2["token"]))
+check("宿管改存放至被拒 403", den4b.status_code == 403, str(den4b.status_code))
 r4 = c.post(B + f"/api/v1/items/{item_a}/action", json={"action": "expire", "value": "2026-12-31"},
             headers=H(mgr["token"])).json()
-check("宿管改到期日", r4.get("expire_at") == "2026-12-31", str(r4))
+check("超管改存放至(通用动作)", r4.get("expire_at") == "2026-12-31", str(r4))
+ku_den = c.post(B + f"/api/v1/items/{item_a}/keep-until", json={"keep_until": "2026-12-30"},
+                headers=H(mgr2["token"]))
+check("宿管用存放至接口被拒 403", ku_den.status_code == 403, str(ku_den.status_code))
+ku_ok = c.post(B + f"/api/v1/items/{item_a}/keep-until", json={"keep_until": "2026-12-31"},
+               headers=H(mgr["token"]))
+check("超管改存放至接口", ku_ok.status_code == 200 and ku_ok.json().get("keep_until") == "2026-12-31",
+      str(ku_ok.json()))
+ku_bad = c.post(B + f"/api/v1/items/{item_a}/keep-until", json={"keep_until": "2026/12/31"},
+                headers=H(mgr["token"]))
+check("存放至格式校验 400", ku_bad.status_code == 400, str(ku_bad.status_code))
 q404 = c.post(B + "/api/v1/users/999999/quota", json={"quota": 8}, headers=H(mgr["token"]))
 check("额度接口(不存在用户404)", q404.status_code == 404, str(q404.status_code))
 c.post(B + f"/api/v1/items/{item_a}/volume", json={"volume_ml": 2500}, headers=H(mgr["token"]))
@@ -202,7 +239,7 @@ check("超管可改学生楼宇", mv.status_code == 200)
 prof = c.put(B + "/api/v1/me", json={"name": "小D", "room": "4-405"}, headers=H(stuD["token"]))
 check("学生自助改姓名寝室", prof.json().get("user", {}).get("room") == "4-405", str(prof.status_code))
 it_d = c.post(B + "/api/v1/items", json={"name": "楼测酸奶", "category": "奶制品", "quantity": 1,
-                                         "expire_at": _soon}, headers=H(stuD["token"])).json()
+                                         "expire_at": exp_keep}, headers=H(stuD["token"])).json()
 east = c.get(B + "/api/v1/items?building=东楼", headers=H(mgr2["token"])).json()["items"]
 main = c.get(B + "/api/v1/items?building=主楼", headers=H(mgr2["token"])).json()["items"]
 check("学生自助登记自动归属本楼冰箱",
@@ -246,10 +283,10 @@ _db2.execute("UPDATE items SET escalated=1 WHERE id=?", (it_d["item_id"],)); _db
 esc = c.get(B + "/api/v1/items?escalated=1", headers=H(mgr2["token"])).json()
 check("超期待处理筛选", any(i["id"] == it_d["item_id"] for i in esc["items"])
       and esc.get("escalated_count", 0) >= 1)
-c.post(B + f"/api/v1/items/{it_d['item_id']}/action", json={"action": "expire", "value": _soon},
-       headers=H(mgr["token"]))
+c.post(B + f"/api/v1/items/{it_d['item_id']}/action", json={"action": "expire", "value": exp_keep},
+       headers=H(mgr["token"]))   # 超管改存放至会自动清 escalated
 esc2 = c.get(B + "/api/v1/items?escalated=1", headers=H(mgr2["token"])).json()
-check("宿管处理后自动移出待办", not any(i["id"] == it_d["item_id"] for i in esc2["items"]))
+check("超管处理后自动移出待办", not any(i["id"] == it_d["item_id"] for i in esc2["items"]))
 csv_r = c.get(B + "/api/v1/export/items.csv?status=all", headers=H(mgr2["token"]))
 check("台账CSV导出(含表头/楼宇列)", csv_r.status_code == 200 and "编码" in csv_r.text
       and "楼宇" in csv_r.text and "楼测酸奶" in csv_r.text, str(csv_r.status_code))
@@ -266,9 +303,150 @@ lg = c.get(B + "/api/v1/unlock_logs?limit=50", headers=H(mgr2["token"])).json()
 check("开锁记录接口(宿管可见)", lg.get("logs") and len(lg["logs"]) >= 1)
 ka = [x for x in lg["logs"] if x["code"] == code_a]
 check("记录含物品/主人/操作人", ka and ka[0]["item_name"] == "酸奶"
-      and ka[0]["owner_name"] == "小A" and ka[0]["actor_name"] == "小A", str(ka[0] if ka else lg)[:90])
+      and ka[0]["owner_name"] == "小A" and ka[0]["actor"] == "kiosk"
+      and ka[0]["actor_name"] == "屏幕输码/扫码", str(ka[0] if ka else lg)[:90])
 den_logs = c.get(B + "/api/v1/unlock_logs", headers=H(stu["token"]))
 check("学生查开锁记录被拒 403", den_logs.status_code == 403, str(den_logs.status_code))
+
+# 5.8 待认领物品凭标签码开锁 + 断网补录
+t2b = c.post(B + "/api/v1/kiosk/login/start", json={}, headers=PS).json()["ticket"]
+c.post(B + "/api/v1/kiosk/login/confirm", json={"ticket": t2b}, headers=H(mgr["token"]))
+r7 = c.post(B + "/api/v1/kiosk/items", json={"name": "无主面包",
+          "category": "零食熟食", "login_ticket": t2b}, headers=PS).json()
+cf7 = c.post(B + f"/api/v1/kiosk/items/{r7['code']}/confirm-store", json={}, headers=PS).json()
+check("宿管登记第二件确认后待认领", cf7.get("status") == "pending_claim", str(cf7))
+un7 = c.post(B + "/api/v1/kiosk/unlock", json={"code": r7["code"]}, headers=PS)
+check("待认领物品凭标签码开锁", un7.status_code == 200
+      and un7.json().get("status") == "pending_claim", str(un7.json()))
+off_code = "OFF" + uuid.uuid4().hex[:6].upper()
+off1 = c.post(B + "/api/v1/pi/offline-items", json={"items": [
+    {"code": off_code, "name": "离线苹果", "category": "水果",
+     "keep_until": exp_keep, "stored_at": _today.isoformat(), "batch_no": exp_batch},
+    {"code": code_a, "name": "重复码", "category": "其他", "expire_at": exp_keep}]},
+    headers=PS).json()
+check("断网补录-新建并跳过已存在编码", off1.get("created") == [off_code]
+      and off1.get("skipped") == [code_a], str(off1))
+pend_list = c.get(B + "/api/v1/items?status=pending_claim", headers=H(mgr["token"])).json()
+_off = next((i for i in pend_list["items"] if i["code"] == off_code), {})
+check("补录物品进待认领区", bool(_off))
+check("补录保留批次/存放至/存放日", _off.get("batch_no") == exp_batch
+      and _off.get("expire_at") == exp_keep and _off.get("stored_at") == _today.isoformat(),
+      str(_off)[:120])
+off2 = c.post(B + "/api/v1/pi/offline-items", json={"items": [
+    {"code": off_code, "name": "离线苹果", "category": "水果", "keep_until": exp_keep}]},
+    headers=PS).json()
+check("断网补录幂等(重复不同步两次)", off2.get("created") == []
+      and off2.get("skipped") == [off_code], str(off2))
+check("补录接口需派密钥", c.post(B + "/api/v1/pi/offline-items", json={"items": []},
+      headers={}).status_code == 401)
+
+# 5.9 满柜上锁 / 排队 / 提醒 / 呼叫 / 存放天数 / 批次编号
+stt = c.get(B + "/api/v1/kiosk/state", params={"fridge_id": "fridge-01"}, headers=PS).json()
+check("触控屏状态(未上锁/天数/批次)", stt.get("locked") is False and stt.get("storage_days") == 6
+      and stt.get("batch_no") == exp_batch, str(stt))
+check("触控屏状态接口需派密钥", c.get(B + "/api/v1/kiosk/state", headers={}).status_code == 401)
+lock_den = c.post(B + "/api/v1/fridge/lock", json={"locked": True, "fridge_id": "fridge-01"},
+                  headers=H(stu["token"]))
+check("学生不能上锁 403", lock_den.status_code == 403, str(lock_den.status_code))
+lk = c.post(B + "/api/v1/fridge/lock", json={"locked": True, "fridge_id": "fridge-01"},
+            headers=H(mgr2["token"])).json()
+check("宿管上锁(冰箱已满)", lk.get("locked") is True, str(lk))
+t3 = c.post(B + "/api/v1/kiosk/login/start", json={}, headers=PS).json()["ticket"]
+c.post(B + "/api/v1/kiosk/login/confirm", json={"ticket": t3}, headers=H(stu["token"]))
+blocked = c.post(B + "/api/v1/kiosk/items", json={"name": "满柜酸奶", "category": "奶制品",
+                 "login_ticket": t3}, headers=PS)
+check("上锁后学生登记被拒 403", blocked.status_code == 403 and "冰箱已满" in blocked.text,
+      str(blocked.status_code))
+q1 = c.post(B + "/api/v1/kiosk/queue", json={"login_ticket": t3, "name": "排队酸奶",
+            "category": "奶制品"}, headers=PS).json()
+check("满柜排队登记(第1位)", q1.get("ok") and q1.get("position") == 1, str(q1))
+check("排队不建台账", not any(i["name"] == "排队酸奶" for i in
+      c.get(B + "/api/v1/items?status=active&q=" + "排队酸奶",
+            headers=H(mgr["token"])).json()["items"]))
+mq = c.get(B + "/api/v1/kiosk/my-queue", params={"login_ticket": t3, "fridge_id": "fridge-01"}).json()
+check("屏幕查我的排队", mq.get("queue") and mq["queue"]["item_name"] == "排队酸奶", str(mq)[:90])
+sq = c.get(B + "/api/v1/queue/mine", headers=H(stu["token"])).json()
+check("小程序查我的排队+上锁状态", sq.get("queue") and sq.get("locked") is True, str(sq)[:90])
+ql = c.get(B + "/api/v1/queue", headers=H(mgr2["token"])).json()["queue"]
+check("宿管排队清单", any(x["id"] == q1["id"] for x in ql))
+fst = c.get(B + "/api/v1/fridge/state?fridge_id=fridge-01", headers=H(mgr2["token"])).json()
+check("宿管冰箱状态(排队人数)", fst.get("locked") is True and fst.get("queue_count") >= 1, str(fst))
+nq = c.post(B + "/api/v1/queue/notify", json={"fridge_id": "fridge-01"},
+            headers=H(mgr2["token"])).json()
+check("手动通知排队学生", nq.get("sent") == 1, str(nq))
+nq2 = c.post(B + "/api/v1/queue/notify", json={"fridge_id": "fridge-01"},
+             headers=H(mgr2["token"])).json()
+check("已通知的1小时内不重复", nq2.get("sent") == 0, str(nq2))
+ul = c.post(B + "/api/v1/fridge/lock", json={"locked": False, "fridge_id": "fridge-01"},
+            headers=H(mgr2["token"])).json()
+check("宿管解除上锁", ul.get("locked") is False, str(ul))
+open_again = c.post(B + "/api/v1/kiosk/queue", json={"login_ticket": t3, "name": "排队酸奶"},
+                    headers=PS)
+check("未上锁时不能排队 400", open_again.status_code == 400, str(open_again.status_code))
+r8 = c.post(B + "/api/v1/kiosk/items", json={"name": "补存苹果", "category": "水果",
+            "login_ticket": t3}, headers=PS).json()
+c.post(B + f"/api/v1/kiosk/items/{r8['code']}/confirm-store", json={}, headers=PS)
+qful = c.get(B + "/api/v1/queue?status=fulfilled", headers=H(mgr2["token"])).json()["queue"]
+check("存入后排队自动完成", any(x["id"] == q1["id"] for x in qful), str([x["id"] for x in qful]))
+c.post(B + "/api/v1/fridge/lock", json={"locked": True, "fridge_id": "fridge-01"},
+       headers=H(mgr2["token"]))
+q2 = c.post(B + "/api/v1/kiosk/queue", json={"login_ticket": t3, "name": "排队牛奶",
+            "category": "奶制品"}, headers=PS).json()
+check("再次排队(重新计数)", q2.get("position") == 1, str(q2))
+cc = c.post(B + "/api/v1/queue/mine/cancel", headers=H(stu["token"])).json()
+check("学生取消排队", cc.get("cancelled") is True, str(cc))
+c.post(B + "/api/v1/fridge/lock", json={"locked": False, "fridge_id": "fridge-01"},
+       headers=H(mgr2["token"]))
+
+# 呼叫宿管（匿名，60 秒内同类型去重）
+call1 = c.post(B + "/api/v1/kiosk/call", json={"fridge_id": "fridge-01", "kind": "unlock"},
+               headers=PS).json()
+check("匿名呼叫宿管", call1.get("ok") and call1.get("deduped") is False, str(call1))
+call2 = c.post(B + "/api/v1/kiosk/call", json={"fridge_id": "fridge-01", "kind": "unlock"},
+               headers=PS).json()
+check("同类型60秒内去重", call2.get("deduped") is True, str(call2))
+bad_call = c.post(B + "/api/v1/kiosk/call", json={"fridge_id": "fridge-01", "kind": "x"}, headers=PS)
+check("未知呼叫类型 400", bad_call.status_code == 400, str(bad_call.status_code))
+calls = c.get(B + "/api/v1/calls", headers=H(mgr2["token"])).json()
+check("呼叫清单(带类型中文)", calls.get("open_count", 0) >= 1
+      and any(x["kind_label"] == "申请开锁" for x in calls["calls"]), str(calls)[:100])
+_open = next(x for x in calls["calls"] if x["kind"] == "unlock" and x["status"] == "open")
+check("呼叫标记已处理", c.post(B + f"/api/v1/calls/{_open['id']}/done",
+      headers=H(mgr2["token"])).status_code == 200)
+check("处理后未处理数归零", c.get(B + "/api/v1/calls", headers=H(mgr2["token"])).json()
+      .get("open_count") == 0)
+
+# 默认存放天数（超管可改）
+sd = c.get(B + "/api/v1/settings/storage-days", headers=H(mgr2["token"])).json()
+check("宿管读存放天数", sd.get("days") == 6, str(sd))
+check("学生读存放天数被拒", c.get(B + "/api/v1/settings/storage-days",
+      headers=H(stu["token"])).status_code == 403)
+check("宿管改存放天数被拒 403", c.post(B + "/api/v1/settings/storage-days", json={"days": 5},
+      headers=H(mgr2["token"])).status_code == 403)
+sd_ok = c.post(B + "/api/v1/settings/storage-days", json={"days": 5}, headers=H(mgr["token"])).json()
+check("超管改存放天数", sd_ok.get("days") == 5, str(sd_ok))
+check("新天数生效到触控屏", c.get(B + "/api/v1/kiosk/state", headers=PS).json()
+      .get("storage_days") == 5)
+check("天数越界被拒 400", c.post(B + "/api/v1/settings/storage-days", json={"days": 99},
+      headers=H(mgr["token"])).status_code == 400)
+c.post(B + "/api/v1/settings/storage-days", json={"days": 6}, headers=H(mgr["token"]))
+
+# 打印后 5 分钟未扫码确认自动作废
+r9 = c.post(B + "/api/v1/kiosk/items", json={"name": "超时面包", "category": "其他",
+            "login_ticket": t3}, headers=PS).json()
+check("超时用例登记待入库", r9.get("status") == "awaiting_scan", str(r9)[:80])
+_db3 = sqlite3.connect(Path(__file__).resolve().parent.parent / "data" / "fridge.db")
+_db3.execute("UPDATE items SET created_at=datetime('now','localtime','-10 minutes') WHERE id=?",
+             (r9["item_id"],))
+_db3.commit(); _db3.close()
+cf9 = c.post(B + f"/api/v1/kiosk/items/{r9['code']}/confirm-store", json={}, headers=PS)
+check("超5分钟确认被拒 400", cf9.status_code == 400, str(cf9.status_code))
+
+# 清理后提醒学生 / 无主物品不能提醒
+cln = c.post(B + f"/api/v1/items/{item_b}/notify-cleaned", json={}, headers=H(mgr2["token"]))
+check("清理留痕后可提醒学生", cln.status_code == 200, str(cln.status_code))
+cln2 = c.post(B + f"/api/v1/items/{r7['item_id']}/notify-cleaned", json={}, headers=H(mgr2["token"]))
+check("无主物品不能提醒 400", cln2.status_code == 400, str(cln2.status_code))
 
 # 6. 心跳与锁状态
 hb = c.get(B + "/api/v1/debug/pi", headers=H(mgr["token"])).json()["pi_nodes"]

@@ -32,8 +32,10 @@ CREATE TABLE IF NOT EXISTS items(
   name TEXT NOT NULL,
   category TEXT DEFAULT '',
   quantity INTEGER DEFAULT 1,
-  expire_at TEXT NOT NULL,                 -- 到期日期 YYYY-MM-DD
-  status TEXT DEFAULT 'active',            -- active | pending_claim | taken_out | removed
+  expire_at TEXT NOT NULL,                 -- 存放至（原到期日，语义已改）YYYY-MM-DD
+  status TEXT DEFAULT 'active',            -- awaiting_scan | active | pending_claim | taken_out | removed | cancelled
+  stored_at TEXT,                          -- 存放日期 YYYY-MM-DD（批次编号与超期按它算）
+  batch_no INTEGER,                        -- 批次编号 1-8 / 11-18（按日期，16 天一轮）
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS unlock_commands(
@@ -79,6 +81,28 @@ CREATE TABLE IF NOT EXISTS photos(
   data BLOB NOT NULL,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS calls(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fridge_id TEXT NOT NULL,
+  kind TEXT NOT NULL,                    -- unlock | full | supply
+  status TEXT DEFAULT 'open',            -- open | done
+  note TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  handled_at TEXT,
+  handled_by TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS queue(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fridge_id TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  item_name TEXT NOT NULL,
+  category TEXT DEFAULT '',
+  quantity INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'waiting',         -- waiting | notified | fulfilled | cancelled | expired
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  notified_at TEXT,
+  fulfilled_item_id INTEGER
+);
 """
 
 # 与 SQLite 版一一对应；时间列用 DATETIME 保持 NOW() 默认值语义；
@@ -105,6 +129,8 @@ CREATE TABLE IF NOT EXISTS items(
   expire_at VARCHAR(16) NOT NULL,
   status VARCHAR(16) DEFAULT 'active',
   volume_ml INT,
+  stored_at VARCHAR(16),
+  batch_no INT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS unlock_commands(
@@ -150,9 +176,32 @@ CREATE TABLE IF NOT EXISTS photos(
   data LONGBLOB NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS calls(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  fridge_id VARCHAR(64) NOT NULL,
+  kind VARCHAR(16) NOT NULL,
+  status VARCHAR(16) DEFAULT 'open',
+  note VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  handled_at DATETIME,
+  handled_by VARCHAR(64) DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS queue(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  fridge_id VARCHAR(64) NOT NULL,
+  user_id INT NOT NULL,
+  item_name VARCHAR(128) NOT NULL,
+  category VARCHAR(64) DEFAULT '',
+  quantity INT DEFAULT 1,
+  status VARCHAR(16) DEFAULT 'waiting',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  notified_at DATETIME,
+  fulfilled_item_id INT
+);
 """
 
-TABLES = ("users", "buildings", "items", "unlock_commands", "reminders", "pi_nodes", "events", "settings")
+TABLES = ("users", "buildings", "items", "unlock_commands", "reminders", "pi_nodes",
+          "events", "settings", "calls", "queue")
 
 _local = threading.local()
 
@@ -292,6 +341,11 @@ def init():
             c.execute("ALTER TABLE unlock_commands ADD COLUMN actor VARCHAR(64) DEFAULT ''")
         except Exception:
             pass
+        for col, ddl in (("stored_at", "VARCHAR(16)"), ("batch_no", "INT")):
+            try:
+                c.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass
     else:
         with conn() as c:
             c.executescript(SCHEMA)
@@ -315,6 +369,23 @@ def init():
                 c.execute("ALTER TABLE unlock_commands ADD COLUMN actor TEXT DEFAULT ''")  # 发起人(openid或kiosk)
             except sqlite3.OperationalError:
                 pass
+            for sql in ("ALTER TABLE items ADD COLUMN stored_at TEXT",
+                        "ALTER TABLE items ADD COLUMN batch_no INTEGER"):
+                try:
+                    c.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
+    # 老数据回填：存放日期取登记日期，批次编号按同一公式重算（幂等）
+    import batch
+    c = conn()
+    rs = c.execute("SELECT id, created_at, stored_at, batch_no FROM items "
+                   "WHERE stored_at IS NULL OR stored_at='' OR batch_no IS NULL").fetchall()
+    for r in rs:
+        d = str(r["created_at"])[:10]
+        if len(d) != 10:
+            continue
+        c.execute("UPDATE items SET stored_at=?, batch_no=? WHERE id=?",
+                  (d, batch.batch_no(d), r["id"]))
     if not conn().execute("SELECT name FROM buildings LIMIT 1").fetchone():
         conn().execute("INSERT INTO buildings(name, fridge_id) VALUES(?, ?)", ("主楼", "fridge-01"))
 

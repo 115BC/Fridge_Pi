@@ -11,11 +11,12 @@
     <view class="tab {{section==='items'?'on':''}}" data-s="items" bindtap="setSection">物品管理</view>
     <view class="tab {{section==='students'?'on':''}}" data-s="students" bindtap="setSection">学生管理</view>
     <view class="tab {{section==='logs'?'on':''}}" data-s="logs" bindtap="setSection">开锁记录</view>
+    <view class="tab {{section==='queue'?'on':''}}" data-s="queue" bindtap="setSection">排队与呼叫</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
   </view>
 
-  <view wx:if="{{section==='items' || section==='students'}}" class="tabs">
+  <view wx:if="{{section==='items' || section==='students' || section==='queue'}}" class="tabs">
     <picker range="{{pickerNames}}" bindchange="onBuilding">
       <view class="tab on">{{building || '全部楼宇'}} ▾</view>
     </picker>
@@ -26,6 +27,23 @@
       <view class="cnt"><text class="badge badge-red">超期</text> {{counts.red || 0}}</view>
       <view class="cnt"><text class="badge badge-yellow">临期</text> {{counts.yellow || 0}}</view>
       <view class="cnt"><text class="badge badge-green">正常</text> {{counts.green || 0}}</view>
+    </view>
+
+    <view class="card">
+      <view class="hd">
+        <view class="li-name">{{fridgeState.locked ? '冰箱已满（已上锁）' : '冰箱正常（可存入）'}}</view>
+        <view class="btn {{fridgeState.locked ? 'btn-green' : 'btn-ghost'}} btn-sm" bindtap="toggleLock">{{fridgeState.locked ? '解除上锁' : '设为已满'}}</view>
+      </view>
+      <view class="muted">{{building || '默认冰箱（建议先选楼宇）'}} · 排队 {{fridgeState.queue_count || 0}} 人 · 未处理呼叫 {{fridgeState.open_calls || 0}} 个 · 默认存放 {{fridgeState.storage_days || storageDays || 6}} 天</view>
+      <view class="muted" style="margin-top:8rpx">上锁只拦学生存入，取出不受影响；解除时会自动微信提醒排队学生</view>
+    </view>
+
+    <view wx:if="{{isAdmin}}" class="card">
+      <view class="hd">
+        <view class="li-name">默认存放天数</view>
+        <view class="btn btn-ghost btn-sm" bindtap="editStorageDays">修改</view>
+      </view>
+      <view class="muted">当前 {{storageDays || 6}} 天 · 登记时自动算「存放至 = 存放日 + 天数」</view>
     </view>
 
     <view wx:if="{{cap}}" class="card">
@@ -93,12 +111,12 @@
             <text wx:else class="badge badge-{{item.color}}">{{item.color_label}}</text>
           </view>
           <view class="muted">{{item.owner_name || '未署名'}} · {{item.owner_room || '无房间'}} · {{item.category}}</view>
-          <view class="muted">数量{{item.quantity}} · 约{{item.vol_l}}L{{item.vol_manual ? '（已修正）' : ''}} · 到期 {{item.expire_at}} · 编码 {{item.code}}</view>
+          <view class="muted">数量{{item.quantity}} · 约{{item.vol_l}}L{{item.vol_manual ? '（已修正）' : ''}} · 编号 {{item.batch_no || '-'}} · 存放至 {{item.expire_at}} · 编码 {{item.code}}</view>
         </view>
         <view class="col">
           <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-code="{{item.code}}" data-id="{{item.id}}" bindtap="unlockItem">开锁</view>
-          <picker mode="date" value="{{item.expire_at}}" data-id="{{item.id}}" bindchange="onExpireChange">
-            <view class="btn btn-ghost btn-sm act">改期</view>
+          <picker wx:if="{{isAdmin}}" mode="date" value="{{item.expire_at}}" data-id="{{item.id}}" bindchange="setKeepUntil">
+            <view class="btn btn-ghost btn-sm act">改存放至</view>
           </picker>
           <view class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="editVolume">体积</view>
           <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="remindOne">提醒</view>
@@ -106,6 +124,7 @@
           <view wx:if="{{view==='active'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="markTaken">已取出</view>
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">归还原位</view>
           <view wx:if="{{view==='pending_claim'}}" class="btn btn-ghost btn-sm act danger" data-it="{{item}}" bindtap="removeItem">清理留痕</view>
+          <view wx:if="{{view==='archived' && item.owner_name && item.owner_name !== '未认领'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="notifyCleaned">提醒已清理</view>
           <view wx:if="{{view==='archived'}}" class="btn btn-ghost btn-sm act" data-it="{{item}}" bindtap="restoreItem">恢复在库</view>
         </view>
       </view>
@@ -154,6 +173,43 @@
       <view class="li-name">{{item.item_name || '未知物品'}} <text class="badge {{item.ok ? 'badge-green' : (item.bad ? 'badge-red' : 'badge-yellow')}}">{{item.status_label}}</text></view>
       <view class="muted">{{item.created_at}} · 编码 {{item.code}} · 主人 {{item.owner_name || '未署名'}} {{item.owner_room || ''}}</view>
       <view class="muted">操作人：{{item.actor_name}}{{item.actor_room ? '(' + item.actor_room + ')' : ''}} · 回执 {{item.acked_at || '-'}} {{item.result_reason ? '· ' + item.result_reason : ''}}</view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='queue'}}">
+    <view class="card">
+      <view class="hd">
+        <view class="li-name">{{fridgeState.locked ? '冰箱已满（已上锁）' : '冰箱正常（可存入）'}}</view>
+        <view class="btn {{fridgeState.locked ? 'btn-green' : 'btn-ghost'}} btn-sm" bindtap="toggleLock">{{fridgeState.locked ? '解除上锁' : '设为已满'}}</view>
+      </view>
+      <view class="muted">{{building || '默认冰箱（建议先选楼宇）'}} · 在排 {{fridgeState.queue_count || 0}} 人 · 未处理呼叫 {{fridgeState.open_calls || 0}} 个</view>
+      <view class="row gap" style="margin-top:12rpx">
+        <button class="btn btn-primary flex1" bindtap="notifyQueue">通知排队学生</button>
+      </view>
+      <view class="muted" style="margin-top:8rpx">上锁只拦学生存入，取出不受影响；解除上锁时会自动通知排队学生</view>
+    </view>
+
+    <view class="card">
+      <view class="card-title">排队清单</view>
+      <view wx:if="{{queueList.length===0}}" class="empty">暂无排队</view>
+      <view wx:for="{{queueList}}" wx:key="id" class="kv">
+        <view class="li-name">{{item.user_name || '学生'}} {{item.room || ''}}
+          <text class="badge {{item.status==='notified'?'badge-green':'badge-yellow'}}">第{{item.position}}位 · {{item.status==='notified'?'已通知':'排队中'}}</text>
+        </view>
+        <view class="muted">{{item.item_name}} · {{item.category}} · {{item.created_at}}</view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="card-title">呼叫宿管（匿名）</view>
+      <view wx:if="{{calls.length===0}}" class="empty">暂无呼叫</view>
+      <view wx:for="{{calls}}" wx:key="id" class="kv">
+        <view class="li-name">{{item.kind_label}}
+          <text class="badge {{item.status==='open'?'badge-red':'badge-green'}}">{{item.status==='open'?'待处理':'已处理'}}</text>
+        </view>
+        <view class="muted">{{item.building || item.fridge_id}} · {{item.created_at}}{{item.handled_at ? ' · 处理 ' + item.handled_at : ''}}</view>
+        <view wx:if="{{item.status==='open'}}" class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="doneCall">标记已处理</view>
+      </view>
     </view>
   </block>
 

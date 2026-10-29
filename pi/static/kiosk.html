@@ -24,15 +24,15 @@
   .topbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
   .topbar .sp { flex: 1; }
   .topbar button { font-size: 15px; padding: 8px 14px; }
-  #live, #live2 { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
+  #live, #live2, #live3 { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
           background: #111; display: none; }
-  #photo { width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px;
-           background: #eee; display: none; margin-top: 8px; }
   .codes { color: #555; font-size: 14px; margin-top: 6px; }
   .guess { font-size: 16px; margin: 10px 0; }
   .guess b { color: #1677ff; }
-  #name, #takeCode, #expire { width: 100%; font-size: 18px; padding: 12px; border: 1px solid #ddd;
-               border-radius: 10px; margin-bottom: 10px; }
+  #name, #takeCode, #csInput, #qName { width: 100%; font-size: 20px; padding: 12px;
+               border: 1px solid #ddd; border-radius: 10px; margin-bottom: 10px; }
+  #takeCode, #csInput { font-family: "Consolas", monospace; letter-spacing: 4px;
+               text-transform: uppercase; }
   .cats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
   .cats button { background: #eef1f5; color: #333; font-size: 16px; padding: 12px 4px; }
   .cats button.sel { background: #1677ff; color: #fff; }
@@ -41,6 +41,7 @@
                   font-size: 16px; padding: 8px 14px; border-radius: 999px; }
   .msg { text-align: center; font-size: 16px; margin-top: 8px; min-height: 24px; }
   .hidden { display: none !important; }
+  .muted { color: #666; font-size: 14px; }
 
   /* 待机屏 */
   #scr-standby { height: 92vh; display: flex; flex-direction: column; align-items: center;
@@ -51,8 +52,26 @@
   /* 选择屏 */
   #scr-home .pick { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
   #scr-home .pick button { font-size: 30px; padding: 64px 0; }
+  #scr-home .callbtn { width: 100%; margin-top: 16px; background: #eef1f5; color: #333;
+                       font-size: 18px; padding: 18px; }
   #scr-home .sub { color: #666; font-size: 15px; margin-top: 20px; text-align: center; }
-  .volhint { font-size: 14px; color: #888; margin: -4px 0 10px; }
+  #homeLocked { display: none; border-radius: 10px; padding: 12px 14px; font-size: 16px;
+                margin-bottom: 12px; text-align: center; background: #fff1f0;
+                border: 1px solid #ffa39e; color: #a8071a; }
+  #dayline { color: #666; font-size: 15px; text-align: center; margin-top: 14px; }
+  #netBadge { display: none; border-radius: 10px; padding: 12px 14px; font-size: 16px;
+              margin-bottom: 12px; text-align: center; }
+
+  /* 8 位编码的大字显示与全字符键盘 */
+  .codedisplay { font-family: "Consolas", monospace; font-size: 38px; font-weight: 700;
+                 letter-spacing: 8px; text-align: center; margin: 10px 0; color: #101820; }
+  .keypad { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 10px 0; }
+  .keypad .kp { background: #eef1f5; color: #222; font-size: 20px; font-weight: 600;
+                padding: 10px 0; border-radius: 8px; }
+  .keypad .kp.wide { grid-column: span 3; font-size: 16px; }
+  .calls button { width: 100%; margin-top: 10px; text-align: left; padding: 20px; }
+  .calls button small { display: block; font-size: 14px; opacity: .85;
+                        margin-top: 4px; font-weight: 400; }
 </style>
 </head>
 <body oncontextmenu="return false">
@@ -67,14 +86,18 @@
 <!-- 存入 / 取出 选择屏 -->
 <div id="scr-home">
   <h1>宿舍冰箱智能管理</h1>
+  <div id="netBadge"></div>
+  <div id="homeLocked"></div>
   <div class="card pick">
     <button class="blue" onclick="enterStore()">存入物品</button>
     <button class="green" onclick="enterTake()">取出物品</button>
   </div>
-  <div class="sub">存入：先扫屏幕登录码，拍照登记后自动打印标签并开锁；取出：扫标签码 / 登录后点我的物品</div>
+  <button class="callbtn" onclick="enterCall()">呼叫宿管</button>
+  <div class="sub">存入：扫码登录 → 登记 → 打印标签 → 扫标签二维码/输编号开锁；取出：扫标签码 / 登录后点我的物品</div>
+  <div id="dayline"></div>
 </div>
 
-<!-- 扫码登录屏（存入前） -->
+<!-- 扫码登录屏（存入 / 排队前） -->
 <div id="scr-login" class="hidden">
   <div class="topbar">
     <button class="grey" onclick="goHome()">← 返回</button>
@@ -82,14 +105,14 @@
     <div style="width:74px"></div>
   </div>
   <div class="card" style="text-align:center">
-    <div class="guess">打开<b style="color:#1677ff">微信小程序</b> → 我的页「扫屏幕登录码」对准下方二维码</div>
+    <div class="guess">打开<b style="color:#1677ff">微信小程序</b> → 我的冰箱页「扫屏幕登录码」对准下方二维码</div>
     <img id="loginQr" style="width:300px;height:300px;background:#fff" alt="登录二维码">
     <div class="msg" id="loginMsg">等待扫码确认…</div>
     <button class="big grey" onclick="startLogin()">看不清？刷新登录码</button>
   </div>
 </div>
 
-<!-- 存入屏 -->
+<!-- 存入屏：第 1 步 登记 + 打印标签 -->
 <div id="scr-store" class="hidden">
   <div class="topbar">
     <button class="grey" onclick="goHome()">← 返回</button>
@@ -98,21 +121,75 @@
   </div>
   <div class="muted" id="storeUser" style="text-align:right;margin-bottom:8px"></div>
   <div class="card">
-    <img id="live" alt="实时取景">
-    <button id="captureBtn" class="big blue">拍照并识别</button>
-    <button id="previewToggle" class="big grey" style="margin-top:8px">关闭实时预览</button>
-    <div class="codes" id="codes"></div>
-    <div class="guess" id="guess"></div>
-  </div>
-  <div class="card" id="formCard" style="display:none">
     <input id="name" placeholder="物品名称（点下方常用词，或键盘输入）" maxlength="30">
     <div class="cats" id="cats"></div>
     <div class="chips" id="chips"></div>
-    <div class="volhint" id="volHint"></div>
-    <input id="expire" type="date">
-    <button id="saveBtn" class="big green" style="display:none">确认存入（打印标签并开锁）</button>
+    <div class="muted" id="keepHint"></div>
+    <button id="saveBtn" class="big green" style="margin-top:12px">确认存入（打印标签）</button>
   </div>
   <div class="msg" id="storeMsg"></div>
+</div>
+
+<!-- 存入屏：第 2 步 扫标签 / 输 8 位编码 → 开锁 -->
+<div id="scr-confirm_store" class="hidden">
+  <div class="topbar">
+    <button class="grey" onclick="abortConfirmStore()">← 返回</button>
+    <div class="sp"></div><h1 style="margin:0">贴标并确认入库</h1><div class="sp"></div>
+    <div style="width:74px"></div>
+  </div>
+  <div class="card">
+    <div class="guess" style="margin-top:0">标签已打印：<b id="csName"></b></div>
+    <div class="codedisplay" id="csCode">--------</div>
+    <div class="muted" id="csMeta" style="text-align:center"></div>
+    <div class="muted" style="margin-top:10px">请把标签贴在物品上，然后将二维码对准摄像头扫码，或点下方键盘输入标签上的 8 位编码。</div>
+    <img id="live3" alt="实时取景">
+    <div class="keypad" id="csPad"></div>
+    <input id="csInput" placeholder="8 位标签编码" maxlength="12">
+    <button id="csScanBtn" class="big grey">对准摄像头扫标签二维码</button>
+    <button id="csOkBtn" class="big green" style="margin-top:10px">确认入库并开锁</button>
+    <button class="previewToggle big grey" style="margin-top:8px">关闭实时预览</button>
+  </div>
+  <div class="msg" id="csMsg"></div>
+</div>
+
+<!-- 满柜排队屏 -->
+<div id="scr-queue" class="hidden">
+  <div class="topbar">
+    <button class="grey" onclick="goHome()">← 返回</button>
+    <div class="sp"></div><h1 style="margin:0">排队登记</h1><div class="sp"></div>
+    <button class="grey" onclick="screenLogout()">退出</button>
+  </div>
+  <div class="muted" id="queueUser" style="text-align:right;margin-bottom:8px"></div>
+  <div class="card">
+    <div class="guess" style="margin-top:0">冰箱已满，暂停存入。排队登记后不打印标签；宿管清出空间后会微信提醒你回来存入。</div>
+    <input id="qName" placeholder="准备存放的物品名称" maxlength="30">
+    <div class="cats" id="qCats"></div>
+    <div class="chips" id="qChips"></div>
+    <button id="qBtn" class="big blue">登记排队</button>
+  </div>
+  <div class="card hidden" id="qStatusCard">
+    <div class="guess" id="qStatus" style="margin-top:0"></div>
+    <button class="big grey" id="qCancelBtn">取消排队</button>
+  </div>
+  <div class="msg" id="queueMsg"></div>
+</div>
+
+<!-- 呼叫宿管屏（匿名） -->
+<div id="scr-call" class="hidden">
+  <div class="topbar">
+    <button class="grey" onclick="goHome()">← 返回</button>
+    <div class="sp"></div><h1 style="margin:0">呼叫宿管</h1><div class="sp"></div>
+    <div style="width:74px"></div>
+  </div>
+  <div class="card">
+    <div class="guess" style="margin-top:0">匿名呼叫：不会记录你的姓名或微信，只通知宿管来处理。</div>
+    <div class="calls">
+      <button class="blue" onclick="callManager('unlock')">申请开锁<small>门打不开 / 锁没有反应</small></button>
+      <button class="blue" onclick="callManager('full')">冰箱已满<small>存放空间不足</small></button>
+      <button class="blue" onclick="callManager('supply')">缺少耗材<small>标签纸 / 袋子用完了</small></button>
+    </div>
+  </div>
+  <div class="msg" id="callMsg"></div>
 </div>
 
 <!-- 取出屏 -->
@@ -128,9 +205,11 @@
   </div>
   <div class="card">
     <img id="live2" alt="实时取景">
-    <input id="takeCode" placeholder="输入标签编码（8 位，如 A1B2C3D4）" maxlength="12">
-    <button id="scanBtn" class="big grey">把物品放到摄像头前，扫标签取码</button>
+    <div class="keypad" id="takePad"></div>
+    <input id="takeCode" placeholder="输入标签上的 8 位编码" maxlength="12">
+    <button id="scanBtn" class="big grey">对准摄像头扫标签二维码</button>
     <button id="takeBtn" class="big green" style="margin-top:10px">开锁取出</button>
+    <button class="previewToggle big grey" style="margin-top:8px">关闭实时预览</button>
   </div>
   <div class="msg" id="takeMsg"></div>
 </div>
@@ -151,25 +230,28 @@
 <div id="doorAlarm" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99;background:#c0392b;color:#fff;text-align:center;padding:10px;font-size:22px">⚠ 冰箱门未关好（锁舌未复位），请关严箱门</div>
 <script>
 const IDLE_MS = 90000;   // 无人操作 90 秒后回主页并登出、关闭摄像头
-const VOL_ML = { "水果":200, "蔬菜":300, "奶制品":200, "肉禽":350, "水产":300,
-                 "饮料":500, "零食熟食":150, "餐盒剩菜":800, "其他":300 };
+const CATS = ["水果", "蔬菜", "奶制品", "肉禽", "水产", "饮料", "零食熟食", "餐盒剩菜", "其他"];
 
-let scr = "home", state = { photo: "", qr: [], guessCategory: "", category: "" };
-let liveOn = false, idleTimer = null;
+let scr = "home", liveOn = false, idleTimer = null;
+let ui = { category: "其他" };                        // 当前登记分类
+let fridge = { locked: false, storage_days: 6, batch_no: 0, today: "", offline: true };
+let offlineMode = false;
 
 /* ---------- 屏幕切换 ---------- */
 function show(name) {
   scr = name;
-  ["standby", "home", "login", "store", "take", "confirm"].forEach(s =>
-    document.getElementById("scr-" + s).classList.toggle("hidden", s !== name));
+  ["standby", "home", "login", "store", "confirm_store", "queue", "call", "take", "confirm"]
+    .forEach(s => document.getElementById("scr-" + s).classList.toggle("hidden", s !== name));
   if (name !== "login") stopLoginPoll();
-  if (name !== "store" && name !== "take" && name !== "confirm" && liveOn) stopPreview();   // 离开操作屏即释放摄像头
+  // 只在需要取景的两屏保留摄像头
+  if (name !== "confirm_store" && name !== "take" && name !== "confirm" && liveOn) stopPreview();
+  if (name === "home") refreshHomeState();
   poke();
 }
-function goStandby() { session = null; loginTicket = ""; show("home"); }   // 无独立待机页：闲置/退出即回主页并登出
+function goStandby() { session = null; loginTicket = ""; offlineMode = false; show("home"); }
 function goHome() { show("home"); }
 
-/* ---------- 待机计时：任何操作都续命，超时关摄像头回待机 ---------- */
+/* ---------- 待机计时：任何操作都续命，超时关摄像头回主页 ---------- */
 function poke() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(goStandby, IDLE_MS);   // 主页闲置同样会登出
@@ -197,13 +279,61 @@ async function post(url, body) {
   const r = await fetch(url, { method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
-  if (!r.ok) throw new Error((await r.json()).detail || r.status);
-  return r.json();
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  return data;
+}
+function addDays(iso, n) {
+  const [y, m, d] = (iso || "").split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const t = new Date(y, m - 1, d + n), p = k => String(k).padStart(2, "0");
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
+}
+function todayISO() {
+  const t = new Date(), p = k => String(k).padStart(2, "0");
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
 }
 
+/* ---------- 网络状态（断网仍可存入，联网后自动补录） ---------- */
+let netOnline = true, netPending = 0;
+async function refreshNet() {
+  try {
+    const s = await (await fetch("/api/net_status")).json();
+    netOnline = !!s.online; netPending = s.pending || 0;
+    const b = document.getElementById("netBadge");
+    if (!netOnline) {
+      b.style.display = "block"; b.style.background = "#fff7e6";
+      b.style.border = "1px solid #ffd591"; b.style.color = "#874d00";
+      b.textContent = "⚠ 当前离线：仍可存入（先存本机、进入待认领区，联网后自动同步）"
+        + (netPending ? ` · 待同步 ${netPending} 件` : "");
+    } else if (netPending) {
+      b.style.display = "block"; b.style.background = "#f6ffed";
+      b.style.border = "1px solid #b7eb8f"; b.style.color = "#237804";
+      b.textContent = `已恢复联网：${netPending} 件离线登记正在自动补录`;
+    } else {
+      b.style.display = "none";
+    }
+  } catch (e) {}
+}
+setInterval(refreshNet, 10000); refreshNet();
+
+/* ---------- 冰箱状态（上锁 / 存放天数 / 当天批次编号） ---------- */
+async function refreshHomeState() {
+  try { fridge = await (await fetch("/api/fridge_state")).json(); } catch (e) {}
+  const lock = document.getElementById("homeLocked");
+  lock.style.display = fridge.locked ? "block" : "none";
+  if (fridge.locked) lock.textContent = "⚠ 冰箱已满，暂停存入 · 点「存入物品」可扫码登记排队，宿管会微信提醒你";
+  const keep = addDays(fridge.today || todayISO(), fridge.storage_days || 6);
+  document.getElementById("dayline").textContent = fridge.offline
+    ? "当前离线：只能离线登记，联网后自动补录"
+    : `今日批次编号 ${fridge.batch_no || "-"} · 默认存放至 ${keep}（${fridge.storage_days || 6} 天）`;
+}
+setInterval(() => { if (scr === "home") refreshHomeState(); }, 15000);
+
 /* ---------- 实时预览 ---------- */
-const live = document.getElementById("live");
-const live2 = document.getElementById("live2");
+const live = document.getElementById("live3");   // 存入确认屏取景
+const live2 = document.getElementById("live2");  // 取出屏取景
+live.style.display = "none";
 async function startPreview() {
   try {
     await post("/api/preview/start");
@@ -211,11 +341,12 @@ async function startPreview() {
     live.src = url; live2.src = url;
     live.style.display = "block"; live2.style.display = "block";
     liveOn = true;
-    document.getElementById("previewToggle").textContent = "关闭实时预览";
-    document.getElementById("previewToggle").style.display = "block";
+    document.querySelectorAll(".previewToggle").forEach(b => {
+      b.textContent = "关闭实时预览"; b.style.display = "block";
+    });
   } catch (e) {
     liveOn = false;
-    document.getElementById("previewToggle").style.display = "none";
+    document.querySelectorAll(".previewToggle").forEach(b => b.style.display = "none");
   }
 }
 async function stopPreview() {
@@ -223,11 +354,11 @@ async function stopPreview() {
   live.style.display = "none"; live.src = "";
   live2.style.display = "none"; live2.src = "";
   liveOn = false;
-  document.getElementById("previewToggle").textContent = "开启实时预览";
+  document.querySelectorAll(".previewToggle").forEach(b => b.textContent = "开启实时预览");
 }
-document.getElementById("previewToggle").onclick = () => {
-  liveOn ? stopPreview() : startPreview();
-};
+document.querySelectorAll(".previewToggle").forEach(b => {
+  b.onclick = () => { liveOn ? stopPreview() : startPreview(); };
+});
 
 /* ---------- 屏幕扫码登录（ticket 会话：出码 120s / 确认后 10 分钟） ---------- */
 let session = null, loginTicket = "", loginPoll = null;
@@ -239,7 +370,7 @@ async function startLogin() {
     const d = await post("/api/login_start");
     loginTicket = d.ticket;
     document.getElementById("loginQr").src = d.qr_url;
-    setMsg("loginMsg", "请在微信小程序「我的物品」页点「扫屏幕登录码」对准本屏", true);
+    setMsg("loginMsg", "请在微信小程序「我的冰箱」页点「扫屏幕登录码」对准本屏", true);
     loginPoll = setInterval(pollLogin, 1000);
   } catch (e) { setMsg("loginMsg", "登录服务不可用：" + e.message, false); }
 }
@@ -250,31 +381,43 @@ async function pollLogin() {
     if (r.status === "confirmed") {
       stopLoginPoll();
       session = r.user;
-      setMsg("loginMsg", `已登录：${session.name}，进入登记`, true);
-      setTimeout(enterStore, 600);
+      setMsg("loginMsg", `已登录：${session.name}` + (session.role !== "student" ? "（宿管）" : ""), true);
+      setTimeout(afterLogin, 600);
     } else if (r.status === "expired") {
       startLogin();
     }
   } catch (e) {}
 }
 function stopLoginPoll() { if (loginPoll) { clearInterval(loginPoll); loginPoll = null; } }
-function screenLogout() { session = null; loginTicket = ""; goHome(); }
+function screenLogout() { session = null; loginTicket = ""; offlineMode = false; goHome(); }
 
-/* ---------- 存入屏（需登录） ---------- */
-function enterStore() {
+/* ---------- 存入入口：满柜分流去排队；宿管仍可存入 ---------- */
+async function afterLogin() {
+  await refreshHomeState();
+  if (fridge.locked && (session.role || "student") === "student") { enterQueue(); return; }
+  offlineMode = false;
+  openStore();
+}
+async function enterStore() {
+  await refreshNet();
+  await refreshHomeState();
+  if (!netOnline) { offlineMode = true; openStore(); return; }
   if (!session) { show("login"); startLogin(); return; }
-  show("store");
-  document.getElementById("storeUser").textContent =
-    `登记人：${session.name} · ${session.room}`;
-  const exp = document.getElementById("expire");
-  if (!exp.value) exp.value = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-  startPreview();   // 无真实摄像头时静默退回静拍模式
+  afterLogin();
 }
 
-function volHint(cat) {
-  const ml = VOL_ML[cat] || VOL_ML["其他"];
-  document.getElementById("volHint").textContent =
-    `估算体积：约 ${(ml/1000).toFixed(1)} L（按类别推断，宿管可在管理端修正）`;
+/* ---------- 存入屏：物品名 / 分类（体积由后端按类别估算） ---------- */
+function openStore() {
+  show("store");
+  document.getElementById("storeUser").textContent = offlineMode
+    ? "离线登记：物品先存本机，联网后自动补录进待认领区"
+    : `登记人：${session.name} · ${session.room}` + (session.role !== "student" ? " · 宿管" : "");
+  const days = fridge.storage_days || 6;
+  const keep = addDays(fridge.today || todayISO(), days);
+  document.getElementById("keepHint").textContent =
+    `存放至 ${keep}（默认 ${days} 天，宿管可调整）· 今日批次编号 ${fridge.batch_no || "-"}`;
+  renderStoreCats();
+  setMsg("storeMsg", "", true);
 }
 
 /* 常用物品名快捷词：屏幕键盘不经过输入法只能敲英文，中文靠点选 */
@@ -289,97 +432,179 @@ const QUICK = {
   "餐盒剩菜": ["剩饭", "剩菜", "汤", "便当", "打包盒"],
   "其他": ["药品", "护肤品", "冰镇饮料", "速食", "调味酱"]
 };
-function renderChips(cat) {
-  const chips = document.getElementById("chips");
-  chips.innerHTML = "";
+function renderCatsInto(catBox, chipBox, onPick) {
+  catBox.innerHTML = "";
+  CATS.forEach(c => {
+    const b = document.createElement("button");
+    b.textContent = c;
+    b.dataset.cat = c;
+    b.onclick = () => onPick(c);
+    catBox.appendChild(b);
+  });
+  renderChipsInto(chipBox, ui.category);
+}
+function renderChipsInto(chipBox, cat) {
+  chipBox.innerHTML = "";
   (QUICK[cat] || QUICK["其他"]).forEach(w => {
     const b = document.createElement("button");
     b.textContent = w;
-    b.onclick = () => {
-      document.getElementById("name").value = w;
-      state.category = cat;
-      renderSel(document.getElementById("cats"), cat);
-      volHint(cat);
-    };
-    chips.appendChild(b);
+    b.onclick = () => { ui.chipTarget && (ui.chipTarget.value = w); };
+    chipBox.appendChild(b);
   });
 }
+function markSel(catBox) {
+  [...catBox.children].forEach(b => b.classList.toggle("sel", b.dataset.cat === ui.category));
+}
+function renderStoreCats() {
+  const catBox = document.getElementById("cats"), chipBox = document.getElementById("chips");
+  ui.chipTarget = document.getElementById("name");
+  renderCatsInto(catBox, chipBox, c => {
+    ui.category = c; markSel(catBox); renderChipsInto(chipBox, c);
+  });
+  markSel(catBox);
+}
 
-function showResult(res) {
-  state = { photo: res.photo, qr: res.qr_codes,
-            guessCategory: res.guess.category, category: res.guess.category };
-  document.getElementById("codes").textContent =
-    res.qr_codes.length ? "识别到标签：" + res.qr_codes.join("，") : "未识别到标签二维码";
-  document.getElementById("guess").innerHTML = res.guess.confidence > 0
-    ? `系统建议分类：<b>${res.guess.category}</b>（置信度 ${(res.guess.confidence*100).toFixed(0)}%），请确认或修正`
-    : "系统暂无分类建议，请手动选择分类";
-  const cats = document.getElementById("cats");
-  cats.innerHTML = "";
-  res.categories.forEach(c => {
+let saveBusy = false;
+document.getElementById("saveBtn").onclick = async () => {
+  if (saveBusy) return;
+  await refreshNet();               // 以点击那一刻的网络状态为准
+  if (!netOnline) offlineMode = true;
+  if (!offlineMode && !session) { show("login"); startLogin(); return; }
+  const name = document.getElementById("name").value.trim();
+  if (!name) return setMsg("storeMsg", "请填写物品名称", false);
+  saveBusy = true;
+  setMsg("storeMsg", "登记中：生成编码、打印标签…", true);
+  try {
+    const d = offlineMode
+      ? await post("/api/offline_item", { name, category: ui.category, quantity: 1 })
+      : await post("/api/register_item", { name, category: ui.category,
+          quantity: 1, login_ticket: loginTicket });
+    document.getElementById("name").value = "";
+    openConfirmStore(d);
+  } catch (e) { setMsg("storeMsg", "登记失败：" + e.message, false); }
+  saveBusy = false;
+};
+
+/* ---------- 存入第 2 步：贴标后扫码 / 输码 → 入库并开锁 ---------- */
+let csBusy = false, csItem = null;
+function openConfirmStore(d) {
+  csItem = d;
+  show("confirm_store");
+  document.getElementById("csCode").textContent = d.code || "--------";
+  document.getElementById("csName").textContent = d.name || "";
+  document.getElementById("csMeta").textContent =
+    `编号 ${d.batch_no || "-"} · 存放至 ${d.keep_until || "-"}`;
+  document.getElementById("csInput").value = "";
+  const warn = d.print === "failed" ? "标签打印失败，请把编号抄下来贴到物品上；" : "";
+  setMsg("csMsg", warn + "请把标签贴好，扫码或输入编码后确认入库", true);
+  startPreview();
+}
+function abortConfirmStore() {
+  if (csItem) logAbort();
+  csItem = null;
+  goHome();
+}
+function logAbort() {
+  // 未扫码确认的登记会在 5 分钟后由后端自动作废，这里只清屏
+}
+async function confirmStoreRun() {
+  if (csBusy || !csItem) return;
+  const code = document.getElementById("csInput").value.trim().toUpperCase();
+  if (code.length < 4) return setMsg("csMsg", "请扫描或输入标签上的 8 位编码", false);
+  csBusy = true;
+  const sentAt = Date.now() / 1000;
+  setMsg("csMsg", "正在确认入库并开锁…", true);
+  try {
+    const d = await post("/api/confirm_store", { code });
+    if (d.offline) {
+      setMsg("csMsg", "已入库（离线登记，联网后自动补录）· 已开锁，请放入物品并关严箱门", true);
+    } else {
+      await waitUnlock(code, "csMsg",
+        `已入库：编号 ${d.batch_no || "-"} · 存放至 ${d.keep_until || "-"} · 已开锁，请放入物品并关严箱门`,
+        sentAt);
+    }
+    if (!offlineMode) { session = null; loginTicket = ""; }   // 登记完成立即登出，防止下一人冒用身份
+    offlineMode = false;
+    csItem = null;
+    setTimeout(() => { if (scr === "confirm_store") goHome(); }, 10000);
+  } catch (e) {
+    setMsg("csMsg", "确认失败：" + e.message, false);
+  }
+  csBusy = false;
+}
+document.getElementById("csOkBtn").onclick = confirmStoreRun;
+document.getElementById("csScanBtn").onclick = async () => {
+  const code = await scanLabelTo("csInput", "csMsg");
+  if (code) confirmStoreRun();
+};
+
+/* ---------- 8 位编码：全字符键盘 + 扫标签二维码 ---------- */
+function buildKeypad(boxId, inputId) {
+  const box = document.getElementById(boxId);
+  box.innerHTML = "";
+  ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").split("").forEach(ch => {
     const b = document.createElement("button");
-    b.textContent = c;
-    b.onclick = () => { state.category = c; renderSel(cats, c); volHint(c); renderChips(c); };
-    cats.appendChild(b);
+    b.className = "kp"; b.textContent = ch;
+    b.onclick = () => keyTap(inputId, ch);
+    box.appendChild(b);
   });
-  renderSel(cats, state.category);
-  volHint(state.category);
-  renderChips(state.category);
-  document.getElementById("formCard").style.display = "block";
-  document.getElementById("saveBtn").style.display = "block";
-  document.getElementById("name").focus();
+  [["⌫ 删除", "del"], ["清空", "clear"]].forEach(([label, act]) => {
+    const b = document.createElement("button");
+    b.className = "kp wide"; b.textContent = label;
+    b.onclick = () => keyTap(inputId, act);
+    box.appendChild(b);
+  });
 }
-
-function renderSel(cats, cur) {
-  [...cats.children].forEach(b => b.classList.toggle("sel", b.textContent === cur));
+function keyTap(inputId, ch) {
+  const el = document.getElementById(inputId);
+  if (ch === "del") el.value = el.value.slice(0, -1);
+  else if (ch === "clear") el.value = "";
+  else if (el.value.length < 12) el.value += ch;
+  poke();
 }
+buildKeypad("csPad", "csInput");
+buildKeypad("takePad", "takeCode");
+["csInput", "takeCode"].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener("input", () => {
+    el.value = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+  });
+});
 
-async function grabRecognitionResult() {
-  // 优先从实时视频抓当前帧；无预览时退回相机静拍
-  if (liveOn && live.naturalWidth > 0) {
-    const canvas = document.createElement("canvas");
-    canvas.width = live.naturalWidth; canvas.height = live.naturalHeight;
-    canvas.getContext("2d").drawImage(live, 0, 0);
-    const blob = await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.92));
-    const fd = new FormData();
-    fd.append("file", blob, "frame.jpg");
-    const r = await fetch("/api/capture_frame", { method: "POST", body: fd });
-    if (!r.ok) throw new Error((await r.json()).detail || r.status);
-    return await r.json();
+async function grabFrame() {
+  // 优先从实时视频抓当前帧（摄像头已被流占用时不能再静拍）
+  if (liveOn) {
+    for (let i = 0; i < 12 && live.naturalWidth === 0; i++)
+      await new Promise(r => setTimeout(r, 150));
+    if (live.naturalWidth > 0) {
+      const canvas = document.createElement("canvas");
+      canvas.width = live.naturalWidth; canvas.height = live.naturalHeight;
+      canvas.getContext("2d").drawImage(live, 0, 0);
+      const blob = await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.92));
+      const fd = new FormData();
+      fd.append("file", blob, "frame.jpg");
+      const r = await fetch("/api/capture_frame", { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      return await r.json();
+    }
   }
   return await post("/api/capture");
 }
 
-document.getElementById("captureBtn").onclick = async () => {
-  setMsg("storeMsg", "正在拍照识别…", true);
+async function scanLabelTo(inputId, msgId) {
+  setMsg(msgId, "请将标签二维码对准摄像头，正在识别…", true);
   try {
-    showResult(await grabRecognitionResult());
-    setMsg("storeMsg", "", true);
-  } catch (e) { setMsg("storeMsg", "识别失败：" + e.message, false); }
-};
-
-let saveBusy = { v: false };
-document.getElementById("saveBtn").onclick = async () => {
-  if (saveBusy.v) return;
-  if (!session) { show("login"); startLogin(); return; }
-  const name = document.getElementById("name").value.trim();
-  const expire = document.getElementById("expire").value;
-  if (!name) return setMsg("storeMsg", "请填写物品名称", false);
-  if (!expire) return setMsg("storeMsg", "请选择到期日期", false);
-  saveBusy.v = true;
-  setMsg("storeMsg", "登记中：生成编码、打印标签、申请开锁…", true);
-  const sentAt = Date.now() / 1000;
-  try {
-    const d = await post("/api/register_item", { name, category: state.category,
-      expire_at: expire, quantity: 1, login_ticket: loginTicket });
-    document.getElementById("name").value = "";
-    const extra = d.status === "pending_claim" ? "（物品已入待认领区，学生可扫码认领）" : "";
-    await waitUnlock(d.code, "storeMsg",
-      `标签 ${d.code} 已打印 · 已开锁，请放入物品并贴好标签${extra}，放好后关严箱门`, sentAt);
-    session = null; loginTicket = "";   // 登记完成立即登出，防止下一人冒用身份
-    setTimeout(goHome, 8000);
-  } catch (e) { setMsg("storeMsg", "登记失败：" + e.message, false); }
-  saveBusy.v = false;
-};
+    const res = await grabFrame();
+    if (res.qr_codes && res.qr_codes.length) {
+      const code = res.qr_codes[0].trim().toUpperCase();
+      document.getElementById(inputId).value = code;
+      setMsg(msgId, "已识别标签 " + code, true);
+      return code;
+    }
+    setMsg(msgId, "未识别到二维码，请手动输入编码", false);
+  } catch (e) { setMsg(msgId, "扫码失败：" + e.message, false); }
+  return "";
+}
 
 /* ---------- 开锁等待（登记/取出共用） ---------- */
 async function waitUnlock(code, msgId, doneMsg, sentAt) {
@@ -411,13 +636,82 @@ async function unlockByCode(code, msgId, doneMsg, busyGuard) {
   return { done, name };
 }
 
+/* ---------- 满柜排队（不打印标签、不开锁） ---------- */
+async function enterQueue() {
+  if (!session) { show("login"); startLogin(); return; }
+  show("queue");
+  document.getElementById("queueUser").textContent =
+    `排队人：${session.name} · ${session.room || ""}`;
+  const catBox = document.getElementById("qCats"), chipBox = document.getElementById("qChips");
+  const nameEl = document.getElementById("qName");
+  ui.category = ui.category || "其他";
+  ui.chipTarget = nameEl;
+  renderCatsInto(catBox, chipBox, c => {
+    ui.category = c; markSel(catBox); renderChipsInto(chipBox, c);
+  });
+  markSel(catBox);
+  setMsg("queueMsg", "", true);
+  await loadQueue();
+}
+async function loadQueue() {
+  const card = document.getElementById("qStatusCard");
+  if (!session || !loginTicket) { card.classList.add("hidden"); return; }
+  try {
+    const d = await (await fetch("/api/my_queue?login_ticket=" + loginTicket)).json();
+    if (d.queue) {
+      card.classList.remove("hidden");
+      document.getElementById("qStatus").textContent =
+        `你已在排队：${d.queue.item_name} · 第 ${d.queue.position} 位`
+        + (d.queue.status === "notified" ? " · 宿管已提醒，请尽快来存" : " · 请等待微信提醒");
+      document.getElementById("qName").value = d.queue.item_name || "";
+    } else {
+      card.classList.add("hidden");
+    }
+  } catch (e) {}
+}
+document.getElementById("qBtn").onclick = async () => {
+  const name = document.getElementById("qName").value.trim();
+  if (!name) return setMsg("queueMsg", "请填写准备存放的物品名称", false);
+  setMsg("queueMsg", "正在登记排队…", true);
+  try {
+    const d = await post("/api/queue_join", { login_ticket: loginTicket,
+      name, category: ui.category, quantity: 1 });
+    setMsg("queueMsg", `排队成功：第 ${d.position} 位，宿管清出空间后会微信提醒你`, true);
+    await loadQueue();
+  } catch (e) { setMsg("queueMsg", "排队失败：" + e.message, false); }
+};
+document.getElementById("qCancelBtn").onclick = async () => {
+  try {
+    await post("/api/queue_cancel", { login_ticket: loginTicket });
+    setMsg("queueMsg", "已取消排队", true);
+    document.getElementById("qStatusCard").classList.add("hidden");
+    setTimeout(goHome, 2500);
+  } catch (e) { setMsg("queueMsg", "取消失败：" + e.message, false); }
+};
+
+/* ---------- 呼叫宿管（匿名） ---------- */
+function enterCall() { show("call"); setMsg("callMsg", "", true); }
+async function callManager(kind) {
+  setMsg("callMsg", "正在通知宿管…", true);
+  try {
+    await post("/api/call", { kind });
+    setMsg("callMsg", "已通知宿管，请稍候", true);
+    setTimeout(() => { if (scr === "call") goHome(); }, 6000);
+  } catch (e) { setMsg("callMsg", "呼叫失败：" + e.message, false); }
+}
+
 /* ---------- 取出屏 ---------- */
 let takeBusy = { v: false };
-function enterTake() {
+async function enterTake() {
   show("take");
-  document.getElementById("takeCode").focus();
+  document.getElementById("takeCode").value = "";
   startPreview();   // 实时取景方便对准标签扫码
   renderMyItems();
+  await refreshNet();
+  await refreshHomeState();
+  if (!netOnline) setMsg("takeMsg", "当前离线：取物开锁需要联网，可长按冰箱上的实体应急按键开门", false);
+  else if (fridge.locked) setMsg("takeMsg", "冰箱已满（暂停存入），取出不受影响", true);
+  else setMsg("takeMsg", "", true);
 }
 
 async function renderMyItems() {
@@ -431,7 +725,7 @@ async function renderMyItems() {
     r.items.forEach(it => {
       const b = document.createElement("button");
       b.className = "big grey"; b.style.marginTop = "8px";
-      b.textContent = `${it.name} · 到期 ${it.expire_at} · ${it.code}`;
+      b.textContent = `${it.name} · 编号 ${it.batch_no || "-"} · 存放至 ${it.expire_at}`;
       b.onclick = async () => {
         if (takeBusy.v) return;
         takeBusy.v = true;
@@ -445,32 +739,17 @@ async function renderMyItems() {
 }
 
 document.getElementById("scanBtn").onclick = async () => {
-  setMsg("takeMsg", "请将标签对准摄像头，正在识别…", true);
-  try {
-    let res;
-    if (liveOn && live.naturalWidth > 0) {
-      res = await grabRecognitionResult();
-    } else {
-      res = await post("/api/capture");   // 取出屏默认不开预览，摄像头空闲可静拍
-    }
-    if (res.qr_codes.length) {
-      const code = res.qr_codes[0].trim();
-      document.getElementById("takeCode").value = code;
-      setMsg("takeMsg", "已识别标签 " + code + "，直接开锁…", true);
-      if (!takeBusy.v) {
-        takeBusy.v = true;
-        const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
-        if (r.done) showConfirm(code, r.name);
-      }
-    } else {
-      setMsg("takeMsg", "未识别到二维码，请手动输入编码", false);
-    }
-  } catch (e) { setMsg("takeMsg", "扫码失败：" + e.message, false); }
+  const code = await scanLabelTo("takeCode", "takeMsg");
+  if (!code || takeBusy.v) return;
+  setMsg("takeMsg", "已识别标签 " + code + "，正在开锁…", true);
+  takeBusy.v = true;
+  const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
+  if (r.done) showConfirm(code, r.name);
 };
 
 document.getElementById("takeBtn").onclick = async () => {
   if (takeBusy.v) return;
-  const code = document.getElementById("takeCode").value.trim();
+  const code = document.getElementById("takeCode").value.trim().toUpperCase();
   if (!code) return setMsg("takeMsg", "请输入或扫描标签编码", false);
   takeBusy.v = true;
   const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
@@ -574,8 +853,8 @@ setInterval(async () => {
   } catch (e) {}
 }, 5000);
 
-/* 初始进入待机屏（不占用摄像头） */
-goHome();   // 无待机页：开机即主页（存入/取出选择）
+/* 初始进入主页（不占用摄像头） */
+goHome();
 </script>
 </body>
 </html>

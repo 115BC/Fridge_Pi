@@ -1,6 +1,6 @@
 <view class="wrap">
   <view class="logo">宿舍冰箱管家</view>
-  <view class="sub">扫码登记 · 到期提醒 · 拍照识别</view>
+  <view class="sub">扫码登记 · 到期提醒 · 智能标签</view>
   <view class="card">
     <block wx:if="{{!needBind}}">
       <button class="btn btn-primary" loading="{{loading}}" bindtap="doLogin">微信登录</button>

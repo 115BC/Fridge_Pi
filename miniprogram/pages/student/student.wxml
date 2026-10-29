@@ -23,9 +23,20 @@
     </view>
   </view>
 
+  <view wx:if="{{locked || queue}}" class="card">
+    <view class="card-title">排队登记</view>
+    <view wx:if="{{queue}}" class="muted">
+      你正在排队：{{queue.item_name}} · 第 {{queue.position}} 位 ·
+      <text class="badge {{queue.status==='notified' ? 'badge-green' : 'badge-yellow'}}">{{queue.status==='notified' ? '宿管已提醒，请尽快到冰箱登记' : '等待宿管提醒'}}</text>
+    </view>
+    <view wx:elif="{{locked}}" class="muted">冰箱已满，暂停存入。请在冰箱触控屏扫码登录后登记排队，宿管清出空间后会微信提醒你。</view>
+    <button wx:if="{{queue}}" class="btn btn-ghost" style="margin-top:12rpx" bindtap="cancelQueue">取消排队</button>
+    <view class="muted" style="margin-top:8rpx">排队不打印标签、不开锁；轮到你再来屏幕登记</view>
+  </view>
+
   <view class="card">
     <view class="card-title">冰箱触控屏</view>
-    <view class="muted">存入在冰箱触控屏完成：屏幕选「存入物品」会出现登录码 → 点下面按钮扫码 → 在屏幕拍照登记，标签自动打印、箱门自动开锁。</view>
+    <view class="muted">存入在冰箱触控屏完成：屏幕选「存入物品」出登录码 → 点下面按钮扫码 → 在屏幕登记物品 → 打印标签 → 把标签对准摄像头扫码（或输 8 位编码）后箱门自动开锁。</view>
     <button class="btn btn-primary" style="margin-top:16rpx" bindtap="scanLogin">扫屏幕登录码</button>
     <button class="btn btn-green" style="margin-top:12rpx" bindtap="scanClaim">扫标签二维码认领物品</button>
     <button class="btn btn-ghost" style="margin-top:12rpx" bindtap="subscribeRemind">开启到期提醒</button>
@@ -38,7 +49,7 @@
     <view wx:for="{{items}}" wx:key="id" class="item list-item">
       <view class="li-main">
         <view class="li-name">{{item.name}} <text class="badge badge-{{item.color}}">{{item.color_label}}</text></view>
-        <view class="muted">{{item.category}} · 数量{{item.quantity}} · 约{{item.vol_l}}L · 到期 {{item.expire_at}} · 编码 {{item.code}}</view>
+        <view class="muted">{{item.category}} · 数量{{item.quantity}} · 约{{item.vol_l}}L · 编号 {{item.batch_no || '-'}} · 存放至 {{item.expire_at}} · 编码 {{item.code}}</view>
       </view>
       <view class="col">
         <view class="btn btn-ghost btn-sm act" data-id="{{item.id}}" bindtap="showQr">取物码</view>
@@ -51,7 +62,7 @@
   <view wx:if="{{notices.length}}" class="card">
     <view class="card-title">通知历史（微信提醒记录）</view>
     <view wx:for="{{notices}}" wx:key="index" class="kv">
-      <view class="muted">{{item.created_at}} · {{item.item_name || '物品'}} {{item.expire_at ? '到期' + item.expire_at : ''}}
+      <view class="muted">{{item.created_at}} · {{item.item_name || '物品'}} {{item.expire_at ? '存放至 ' + item.expire_at : ''}}
         <text class="badge {{item.status==='sent' ? 'badge-green' : 'badge-yellow'}}">{{item.status_label}}</text>
       </view>
     </view>

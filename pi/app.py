@@ -4,7 +4,9 @@ import hmac
 import json
 import subprocess
 import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -23,7 +25,8 @@ BASE_DIR = Path(__file__).resolve().parent
 CFG = yaml.safe_load((BASE_DIR / "config.yaml").read_text(encoding="utf-8"))
 EVENTS_FILE = BASE_DIR / "data" / "events.jsonl"
 ITEMS_FILE = BASE_DIR / "data" / "items.jsonl"
-VERSION = "1.3"
+OFFLINE_FILE = BASE_DIR / "data" / "offline_items.jsonl"
+VERSION = "1.5"
 
 lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
                            feedback_pin=CFG["lock"].get("feedback_gpio"),
@@ -73,6 +76,116 @@ async def do_unlock(code: str, ts: int, token: str) -> dict:
     return {"status": "unlocked", "code": code, "feedback": lock.has_feedback}
 
 
+# ---------- 断网判定与离线登记 ----------
+# 轮询成功即在线；超过 NET_STALE 秒没有成功才判离线（云托管冷启动会有几秒超时）
+NET = {"online": True, "last_ok": time.time(), "last_err": ""}
+NET_STALE = 10.0
+
+
+def net_online() -> bool:
+    return NET["online"] and time.time() - NET["last_ok"] <= NET_STALE
+
+
+def load_offline_items() -> list[dict]:
+    if not OFFLINE_FILE.exists():
+        return []
+    out = []
+    for line in OFFLINE_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return out
+
+
+def save_offline_items(items: list[dict]):
+    OFFLINE_FILE.parent.mkdir(exist_ok=True)
+    tmp = OFFLINE_FILE.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(i, ensure_ascii=False) + "\n" for i in items),
+                   encoding="utf-8")
+    tmp.replace(OFFLINE_FILE)
+
+
+def offline_pending() -> list[dict]:
+    # 旧队列没有 confirmed 字段（当时登记即入库），按已完成处理
+    return [i for i in load_offline_items()
+            if not i.get("synced") and i.get("confirmed", True)]
+
+
+def new_offline_code() -> str:
+    used = {i.get("code") for i in load_offline_items()}
+    while True:
+        code = uuid.uuid4().hex[:8].upper()
+        if code not in used:
+            return code
+
+
+# 与 server/batch.py 同一公式：16 天一轮，1-8 / 11-18 两组
+BATCH_EPOCH = date(2026, 1, 1)
+OFFLINE_STORAGE_DAYS = 6      # 断网时按默认存放天数
+
+
+def batch_no(on: date) -> int:
+    d = (on - BATCH_EPOCH).days % 16
+    return d + 1 if d < 8 else d + 3
+
+
+def keep_until(stored: date, days: int = OFFLINE_STORAGE_DAYS) -> str:
+    return (stored + timedelta(days=days)).isoformat()
+
+
+# 刚打印、还没扫码/输码入库的标签：5 分钟内有效
+AWAITING: dict[str, dict] = {}
+AWAIT_TTL = 300
+
+
+def remember_awaiting(code: str, **info):
+    AWAITING[code] = {"at": time.time(), **info}
+    now = time.time()
+    for k in [k for k, v in AWAITING.items() if now - v["at"] > AWAIT_TTL]:
+        AWAITING.pop(k, None)
+
+
+def awaiting_info(code: str) -> dict | None:
+    info = AWAITING.get(code)
+    if not info:
+        return None
+    if time.time() - info["at"] > AWAIT_TTL:
+        AWAITING.pop(code, None)
+        return None
+    return info
+
+
+async def sync_offline_items(client: httpx.AsyncClient, base: str, headers: dict):
+    """断网期间本地登记的物品 -> 联网后补录进后端待认领区（按标签编码幂等）。"""
+    items = load_offline_items()
+    # 只补录已扫码确认（真正放进冰箱）的；刚打印还没确认的不能进台账
+    pend = [i for i in items if not i.get("synced") and i.get("confirmed", True)]
+    if not pend:
+        return
+    payload = {"items": [{k: i.get(k) for k in
+                          ("code", "name", "category", "keep_until", "expire_at",
+                           "quantity", "fridge_id", "stored_at", "batch_no")}
+                         for i in pend]}
+    r = await client.post(f"{base}/api/v1/pi/offline-items", json=payload, headers=headers)
+    if r.status_code != 200:
+        print(f"[offline] 同步失败 HTTP {r.status_code}: {r.text[:120]}")
+        return
+    d = r.json()
+    done = set(d.get("created", [])) | set(d.get("skipped", []))
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    items = load_offline_items()      # 重读：等待网络期间可能又登记了新的离线物品
+    for i in items:
+        if i.get("code") in done and not i.get("synced"):
+            i["synced"] = True
+            i["synced_at"] = now
+    save_offline_items(items)
+    log_event("offline_sync", ",".join(sorted(done)),
+              f"created={len(d.get('created', []))} skipped={len(d.get('skipped', []))}")
+
+
 async def poll_backend():
     """树莓派只主动向外请求（内网无需开放端口），从小程序后端拉取待执行的解锁指令并上报心跳。"""
     base = CFG["backend"]["base_url"].rstrip("/")
@@ -94,6 +207,9 @@ async def poll_backend():
                         ack = {"code": cmd["code"], "status": "rejected", "reason": e.detail}
                     await client.post(f"{base}/api/v1/pi/unlock-result", json=ack, headers=headers)
                     log_event("backend_ack", ack["code"], ack["status"])
+                NET.update(online=True, last_ok=time.time(), last_err="")
+                if offline_pending():
+                    await sync_offline_items(client, base, headers)
                 now = time.time()
                 if now - last_hb >= hb_every:
                     last_hb = now
@@ -101,7 +217,8 @@ async def poll_backend():
                         "fridge_id": fridge_id, "is_locked": lock.is_locked,
                         "mock": lock.mock, "version": VERSION})
             except Exception as e:
-                print(f"[poll] 后端不可达: {e}")
+                NET.update(online=False, last_err=str(e) or type(e).__name__)
+                print(f"[poll] 后端不可达: {NET['last_err']}")
             await asyncio.sleep(interval)
 
 
@@ -353,14 +470,19 @@ async def get_photo(name: str):
 
 class PrintReq(BaseModel):
     code: str
-    name: str
-    expire_at: str
+    name: str = ""
+    owner_name: str = ""
+    room: str = ""
+    batch_no: str = ""
+    keep_until: str = ""
 
 
 @app.post("/api/print")
 async def print_label(req: PrintReq):
     """一物一签：方案B下由后端在登记成功后直连调用；无打印机时生成 PNG。"""
-    out = printer.print_label(req.code, req.name, req.expire_at)
+    out = printer.print_label(req.code, req.name, owner_name=req.owner_name,
+                              room=req.room, batch_no=req.batch_no,
+                              keep_until=req.keep_until)
     log_event("print_label", req.code, out.name)
     return {"status": "printed" if not printer.mock else "rendered_only", "file": out.name}
 
@@ -397,6 +519,52 @@ class UnlockCodeReq(BaseModel):
     code: str
 
 
+@app.get("/api/net_status")
+def net_status():
+    """触控屏用：后端是否可达 + 断网期间本地待同步的登记条数。"""
+    return {"online": net_online(), "last_ok": NET["last_ok"], "error": NET["last_err"],
+            "pending": len(offline_pending())}
+
+
+class OfflineItemReq(BaseModel):
+    name: str
+    category: str = "其他"
+    quantity: int = 1
+
+
+@app.post("/api/offline_item")
+async def offline_item(req: OfflineItemReq):
+    """断网存入第 1 步：本机生成编码 + 打印标签（不开锁），
+    贴好标签扫二维码/输 8 位编码后 /api/confirm_store 才开锁并记为已确认。"""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "请填写物品名称")
+    code = new_offline_code()
+    today = date.today()
+    keep = keep_until(today)
+    bno = batch_no(today)
+    try:
+        out = printer.print_label(code, name, batch_no=str(bno), keep_until=keep)
+        print_status = "printed" if not printer.mock else "rendered_only"
+        log_event("print_label", code, out.name)
+    except Exception as e:
+        print_status = "failed"
+        log_event("print_fail", code, str(e))
+    items = load_offline_items()
+    items.append({"code": code, "name": name, "category": req.category,
+                  "keep_until": keep, "quantity": max(1, req.quantity),
+                  "fridge_id": CFG["backend"]["fridge_id"],
+                  "stored_at": today.isoformat(), "batch_no": bno,
+                  "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "synced": False, "confirmed": False})
+    save_offline_items(items)
+    remember_awaiting(code, name=name, batch_no=bno, keep_until=keep, offline=True)
+    log_event("offline_item", code, f"{name}/{req.category} 断网登记待扫码")
+    return {"status": "awaiting_scan", "offline": True, "code": code,
+            "batch_no": bno, "keep_until": keep, "print": print_status,
+            "queued": len([i for i in items if not i.get("synced")])}
+
+
 @app.post("/api/unlock_code")
 async def unlock_code(req: UnlockCodeReq):
     """触控屏凭标签编码开锁（存入/取出通用）：交给后端校验后走轮询链路执行。"""
@@ -406,9 +574,12 @@ async def unlock_code(req: UnlockCodeReq):
     code = req.code.strip()
     if not code:
         raise HTTPException(400, "请输入标签编码")
-    async with httpx.AsyncClient(timeout=6) as client:
-        r = await client.post(f"{base}/api/v1/kiosk/unlock", json={"code": code},
-                              headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/unlock", json={"code": code},
+                                  headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    except httpx.HTTPError:
+        raise HTTPException(503, "当前离线：取物开锁需要联网，可长按实体应急按键开门")
     if r.status_code != 200:
         try:
             detail = r.json().get("detail") or f"HTTP {r.status_code}"
@@ -462,21 +633,24 @@ async def my_items(ticket: str):
 class RegisterItemReq(BaseModel):
     name: str
     category: str = "其他"
-    expire_at: str
     quantity: int = 1
     login_ticket: str = ""
 
 
 @app.post("/api/register_item")
 async def register_item(req: RegisterItemReq):
-    """触控屏拍照登记：转发后端建台账+打印+开锁（共享密钥只留在派本地，不进浏览器）。"""
+    """触控屏登记第 1 步：后端建待入库台账 + 打印标签（不开锁）。
+    贴好标签扫码/输码后 /api/confirm_store 才真正入库并开锁。"""
     base = CFG["backend"]["base_url"].rstrip("/")
     if not base:
         raise HTTPException(503, "未配置后端，无法登记")
     payload = req.model_dump() | {"fridge_id": CFG["backend"]["fridge_id"]}
-    async with httpx.AsyncClient(timeout=8) as client:
-        r = await client.post(f"{base}/api/v1/kiosk/items", json=payload,
-                              headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/items", json=payload,
+                                  headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    except httpx.HTTPError:
+        raise HTTPException(503, "网络中断，登记未完成：请重试，或返回主页改走离线存入")
     if r.status_code != 200:
         try:
             detail = r.json().get("detail") or f"HTTP {r.status_code}"
@@ -484,15 +658,74 @@ async def register_item(req: RegisterItemReq):
             detail = f"HTTP {r.status_code}"
         raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
     d = r.json()
+    d.setdefault("name", req.name)
     if d.get("print") not in ("queued", "printed") and d.get("code"):
         # 后端在云端够不到派本机 /api/print -> 派自己把标签打出来
         try:
-            out = printer.print_label(d["code"], req.name, req.expire_at)
+            out = printer.print_label(d["code"], req.name,
+                                      owner_name=d.get("owner_name", ""),
+                                      room=d.get("room", ""),
+                                      batch_no=str(d.get("batch_no") or ""),
+                                      keep_until=d.get("keep_until", ""))
             log_event("print_label", d["code"], out.name)
             d["print"] = "printed" if not printer.mock else "rendered_only"
         except Exception as e:
             log_event("print_fail", d.get("code", ""), str(e))
             d["print"] = "failed"
+    if d.get("code"):
+        remember_awaiting(d["code"], name=req.name, batch_no=d.get("batch_no"),
+                          keep_until=d.get("keep_until", ""), offline=False)
+    return d
+
+
+class ConfirmStoreReq(BaseModel):
+    code: str
+
+
+@app.post("/api/confirm_store")
+async def confirm_store(req: ConfirmStoreReq):
+    """登记第 2 步：扫标签二维码 / 输 8 位编码 -> 正式入库并开锁。"""
+    code = req.code.strip().upper()
+    if not code:
+        raise HTTPException(400, "请扫描或输入标签上的 8 位编码")
+    # 断网登记：不依赖后端，本机直接开锁，联网后补录进待认领区
+    off = next((i for i in load_offline_items()
+                if i.get("code") == code and not i.get("synced")
+                and not i.get("confirmed", True)), None)
+    if off:
+        was_locked = lock.is_locked
+        lock.unlock()
+        mark_unlocked(code)
+        log_event("offline_unlock", code, "first" if was_locked else "again")
+        items = load_offline_items()
+        for i in items:
+            if i.get("code") == code and not i.get("synced"):
+                i["confirmed"] = True
+                i["confirmed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        save_offline_items(items)
+        AWAITING.pop(code, None)
+        log_event("offline_confirm", code, f"{off.get('name', '')} 扫码确认入库")
+        return {"ok": True, "offline": True, "code": code,
+                "name": off.get("name", ""), "status": "pending_claim",
+                "batch_no": off.get("batch_no"), "keep_until": off.get("keep_until", "")}
+    base = CFG["backend"]["base_url"].rstrip("/")
+    if not base:
+        raise HTTPException(503, "未配置后端，无法确认入库")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/items/{code}/confirm-store",
+                                  json={}, headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    except httpx.HTTPError:
+        raise HTTPException(503, "网络中断：确认入库需要联网，请重试")
+    if r.status_code != 200:
+        try:
+            detail = r.json().get("detail") or f"HTTP {r.status_code}"
+        except Exception:
+            detail = f"HTTP {r.status_code}"
+        raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
+    d = r.json()
+    AWAITING.pop(code, None)
+    log_event("confirm_store", code, f"{d.get('name', '')} 扫码入库")
     return d
 
 
@@ -517,6 +750,123 @@ async def takeout_confirm(req: TakeoutConfirmReq):
         raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
     d = r.json()
     return d
+
+
+# ---------- 满柜上锁 / 排队 / 呼叫宿管（转发后端；断网只读回退） ----------
+def _pi_headers() -> dict:
+    return {"X-Pi-Secret": CFG["security"]["secret"]}
+
+
+@app.get("/api/fridge_state")
+async def fridge_state():
+    """触控屏：冰箱是否上锁、默认存放天数、当天批次编号。"""
+    base = CFG["backend"]["base_url"].rstrip("/")
+    fallback = {"fridge_id": CFG["backend"]["fridge_id"], "locked": False,
+                "storage_days": OFFLINE_STORAGE_DAYS, "batch_no": batch_no(date.today()),
+                "today": date.today().isoformat(), "offline": True}
+    if not base:
+        return fallback
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{base}/api/v1/kiosk/state",
+                                 params={"fridge_id": CFG["backend"]["fridge_id"]},
+                                 headers=_pi_headers())
+        if r.status_code != 200:
+            return fallback
+        d = r.json()
+        d["offline"] = False
+        return d
+    except httpx.HTTPError:
+        return fallback
+
+
+class QueueJoinReq(BaseModel):
+    login_ticket: str = ""
+    name: str
+    category: str = "其他"
+    quantity: int = 1
+
+
+@app.post("/api/queue_join")
+async def queue_join(req: QueueJoinReq):
+    """满柜排队：只登记名字/类别，不打印标签、不建台账、不开锁。"""
+    base = _backend_url()
+    payload = req.model_dump() | {"fridge_id": CFG["backend"]["fridge_id"]}
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/queue", json=payload,
+                                  headers=_pi_headers())
+    except httpx.HTTPError:
+        raise HTTPException(503, "排队登记需要联网，请稍后再试")
+    if r.status_code != 200:
+        try:
+            detail = r.json().get("detail") or f"HTTP {r.status_code}"
+        except Exception:
+            detail = f"HTTP {r.status_code}"
+        raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
+    d = r.json()
+    log_event("queue_join", "", f"{req.name} 第{d.get('position')}位")
+    return d
+
+
+@app.get("/api/my_queue")
+async def my_queue(login_ticket: str):
+    base = CFG["backend"]["base_url"].rstrip("/")
+    if not base or not login_ticket:
+        return {"queue": None, "locked": False, "offline": True}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{base}/api/v1/kiosk/my-queue",
+                                 params={"login_ticket": login_ticket,
+                                         "fridge_id": CFG["backend"]["fridge_id"]})
+        if r.status_code != 200:
+            return {"queue": None, "locked": False, "offline": True}
+        return r.json()
+    except httpx.HTTPError:
+        return {"queue": None, "locked": False, "offline": True}
+
+
+class QueueCancelReq(BaseModel):
+    login_ticket: str = ""
+
+
+@app.post("/api/queue_cancel")
+async def queue_cancel(req: QueueCancelReq):
+    base = _backend_url()
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/queue/cancel", json=req.model_dump(),
+                                  headers=_pi_headers())
+    except httpx.HTTPError:
+        raise HTTPException(503, "取消排队需要联网，请稍后再试")
+    if r.status_code != 200:
+        raise HTTPException(502, "取消失败，请稍后再试")
+    return r.json()
+
+
+class CallReq(BaseModel):
+    kind: str            # unlock | full | supply
+    note: str = ""
+
+
+@app.post("/api/call")
+async def call_manager(req: CallReq):
+    """匿名呼叫宿管：只上报冰箱与种类，不带任何身份信息。"""
+    if req.kind not in ("unlock", "full", "supply"):
+        raise HTTPException(400, "未知呼叫类型")
+    base = _backend_url()
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/call",
+                                  json={"fridge_id": CFG["backend"]["fridge_id"],
+                                        "kind": req.kind, "note": req.note},
+                                  headers=_pi_headers())
+    except httpx.HTTPError:
+        raise HTTPException(503, "呼叫宿管需要联网，请稍后再试")
+    if r.status_code != 200:
+        raise HTTPException(502, "呼叫失败，请稍后再试")
+    log_event("call_manager", "", req.kind)
+    return r.json()
 
 
 @app.get("/api/last_unlock")

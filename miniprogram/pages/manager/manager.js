@@ -13,7 +13,7 @@ const FILTERS = [
 
 const SORTS = [
   { key: 'urgency', label: '紧急度' },
-  { key: 'expire', label: '到期日' },
+  { key: 'expire', label: '存放至' },
   { key: 'created', label: '存放先后' },
   { key: 'volume', label: '占地大小' }
 ]
@@ -32,6 +32,7 @@ Page({
     buildings: [], pickerNames: [], building: wx.getStorageSync('mgr_building') || '',
     users: [], uq: '', roleOptions: ROLE_OPTIONS,
     students: [], sq: '',
+    storageDays: 0, fridgeState: {}, queueList: [], calls: [],
     pi_nodes: [], unlock_commands: [], events: [], reminders: [], logs: []
   },
   onShow() {
@@ -39,24 +40,28 @@ Page({
     const role = wx.getStorageSync('role')
     this.setData({ role, user: wx.getStorageSync('user'), isAdmin: role === 'admin' })
     this.loadBuildings()
+    this.loadStorageDays()
     this.load()
   },
   onPullDownRefresh() {
     const p = this.data.section === 'items' ? this.load()
       : this.data.section === 'students' ? this.loadStudents()
       : this.data.section === 'logs' ? this.loadLogs()
+      : this.data.section === 'queue' ? this.loadQueueAndCalls()
       : this.data.section === 'users' ? this.loadUsers() : this.loadDebug()
     p.then(() => wx.stopPullDownRefresh())
   },
   setSection(e) {
     const s = e.currentTarget.dataset.s
-    if (s !== 'items' && s !== 'students' && s !== 'logs' && !this.data.isAdmin)
+    if ((s === 'users' || s === 'debug') && !this.data.isAdmin)
       return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
     this.setData({ section: s })
     if (s === 'students') this.loadStudents()
     if (s === 'logs') this.loadLogs()
+    if (s === 'queue') this.loadQueueAndCalls()
     if (s === 'users') this.loadUsers()
     if (s === 'debug') this.loadDebug()
+    if (s === 'items') this.load()
   },
 
   // ---------- 楼宇：切换筛选（宿管可切任意楼）+ 超管维护 ----------
@@ -82,6 +87,7 @@ Page({
   },
   refreshSection() {
     if (this.data.section === 'students') return this.loadStudents()
+    if (this.data.section === 'queue') return this.loadQueueAndCalls()
     return this.load()
   },
   currentFridge() {
@@ -104,6 +110,7 @@ Page({
       }))
       this.setData({ items, counts: d.counts, escCount: d.escalated_count || 0 })
       this.loadCapacity()
+      this.loadFridgeState()
     }).catch(e => wx.showToast({ title: '加载失败', icon: 'none' }))
   },
   loadCapacity() {
@@ -115,6 +122,105 @@ Page({
         util: c.util_pct, count: c.item_count, fridge
       } })
     }).catch(() => {})
+  },
+  loadFridgeState() {
+    return api.get('/api/v1/fridge/state?fridge_id=' +
+      encodeURIComponent(this.currentFridge())).then(d => {
+      this.setData({ fridgeState: d })
+    }).catch(() => {})
+  },
+  loadStorageDays() {
+    return api.get('/api/v1/settings/storage-days').then(d => {
+      this.setData({ storageDays: d.days })
+    }).catch(() => {})
+  },
+  editStorageDays() {
+    if (!this.data.isAdmin) return wx.showToast({ title: '仅超管可修改', icon: 'none' })
+    wx.showModal({
+      title: '默认存放天数', editable: true,
+      placeholderText: `当前 ${this.data.storageDays || 6} 天（1~60）`,
+      success: r => {
+        if (!r.confirm) return
+        const n = parseInt(r.content)
+        if (!(n >= 1 && n <= 60)) return wx.showToast({ title: '请输入 1~60', icon: 'none' })
+        api.post('/api/v1/settings/storage-days', { days: n }).then(() => {
+          wx.showToast({ title: '已更新', icon: 'success' })
+          this.loadStorageDays()
+        }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      }
+    })
+  },
+  toggleLock() {
+    if (!this.data.building) return wx.showToast({ title: '请先选择具体楼宇', icon: 'none' })
+    const locked = !!this.data.fridgeState.locked
+    const fridge = this.currentFridge()
+    wx.showModal({
+      title: locked ? '解除上锁' : '设为冰箱已满',
+      content: locked
+        ? `解除「${this.data.building}」上锁？学生可继续存入，并会自动微信提醒排队学生。`
+        : `把「${this.data.building}」设为已满？学生将不能存入（只能排队登记），取出不受影响。`,
+      success: r => {
+        if (!r.confirm) return
+        wx.showLoading({ title: locked ? '解除中' : '上锁中' })
+        api.post('/api/v1/fridge/lock', { locked: !locked, fridge_id: fridge }).then(d => {
+          wx.hideLoading()
+          this.loadFridgeState(); this.loadQueueAndCalls()
+          wx.showModal({
+            title: '已处理', showCancel: false,
+            content: locked ? `已解除上锁，微信提醒了 ${d.notified || 0} 位排队学生`
+                            : '已上锁：学生暂停存入，可登记排队'
+          })
+        }).catch(err => {
+          wx.hideLoading()
+          wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' })
+        })
+      }
+    })
+  },
+  loadQueueAndCalls() {
+    const b = this.data.building
+    const qs = b ? '?building=' + encodeURIComponent(b) : ''
+    return Promise.all([
+      this.loadFridgeState(),
+      api.get('/api/v1/queue' + qs).then(d => this.setData({ queueList: d.queue })).catch(() => {}),
+      api.get('/api/v1/calls' + qs).then(d => this.setData({ calls: d.calls })).catch(() => {})
+    ])
+  },
+  notifyQueue() {
+    if (!this.data.building) return wx.showToast({ title: '请先选择具体楼宇', icon: 'none' })
+    wx.showModal({
+      title: '通知排队学生',
+      content: `向「${this.data.building}」排队学生推送微信提醒？（已通知过的 1 小时内不会重复）`,
+      success: r => {
+        if (!r.confirm) return
+        wx.showLoading({ title: '推送中' })
+        api.post('/api/v1/queue/notify', { fridge_id: this.currentFridge() }).then(d => {
+          wx.hideLoading()
+          this.loadQueueAndCalls()
+          wx.showModal({ title: '完成', content: `已通知 ${d.sent} 人`, showCancel: false })
+        }).catch(() => { wx.hideLoading(); wx.showToast({ title: '推送失败', icon: 'none' }) })
+      }
+    })
+  },
+  doneCall(e) {
+    const id = e.currentTarget.dataset.id
+    api.post(`/api/v1/calls/${id}/done`, {}).then(() => {
+      wx.showToast({ title: '已处理', icon: 'success' })
+      this.loadQueueAndCalls()
+    }).catch(() => wx.showToast({ title: '操作失败', icon: 'none' }))
+  },
+  notifyCleaned(e) {
+    const it = e.currentTarget.dataset.it
+    wx.showModal({
+      title: '提醒已清理',
+      content: `通知「${it.owner_name}」：其物品「${it.name}」已按规清理？`,
+      success: r => {
+        if (!r.confirm) return
+        api.post(`/api/v1/items/${it.id}/notify-cleaned`, {}).then(d => {
+          wx.showModal({ title: '提醒结果', content: d.msg || '已发送', showCancel: false })
+        }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
+      }
+    })
   },
   editCapacity() {
     const fridge = (this.data.cap || {}).fridge || this.currentFridge()
@@ -276,11 +382,12 @@ Page({
       success: r => r.confirm && this.action(it.id, 'taken')
     })
   },
-  onExpireChange(e) {
+  setKeepUntil(e) {
+    if (!this.data.isAdmin) return wx.showToast({ title: '改存放至仅超管可操作', icon: 'none' })
     const id = e.currentTarget.dataset.id
     if (!e.detail.value) return
-    api.post(`/api/v1/items/${id}/action`, { action: 'expire', value: e.detail.value }).then(() => {
-      wx.showToast({ title: '已改到期日', icon: 'success' })
+    api.post(`/api/v1/items/${id}/keep-until`, { keep_until: e.detail.value }).then(() => {
+      wx.showToast({ title: '已改存放至', icon: 'success' })
       this.load()
     }).catch(err => wx.showToast({ title: '失败:' + (err.data && err.data.detail || ''), icon: 'none' }))
   },

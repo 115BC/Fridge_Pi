@@ -4,7 +4,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +20,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 抑制低光QR误检刷屏
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+import batch
 import colors
 import db
 import volume
@@ -52,11 +53,43 @@ MANAGER_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("manager_openids") or [])
 DEV_LOGIN = bool(CFG["wechat"].get("dev_login"))   # 仅内网调试：code 带 "dev:" 前缀时跳过微信验证
 AUTO = CFG["rules"].get("auto_remind", {})
 STOCK_KEEP_DAYS = CFG["rules"].get("stocktake_keep_days", 7)
-ESCALATE_DAYS = int(CFG["rules"].get("overdue_escalate_days", 3))   # 超期N天进宿管"超期待处理"
 PI_LOCAL = (CFG["print"].get("pi_local_api") or "").rstrip("/")
 DEFAULT_CAPACITY_ML = int(CFG.get("fridge", {}).get("capacity_ml") or 150000)
 PHOTO_DIR = Path(CFG["paths"].get("photo_dir") or (db.DATA_DIR / "photos"))
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+AWAIT_SCAN_MINUTES = 5      # 打印标签后多久没扫码/输码就作废
+QUEUE_EXPIRE_HOURS = 24     # 满柜排队多久未完成自动过期
+
+
+def storage_days() -> int:
+    try:
+        return max(1, min(60, int(db.get_setting("storage_days", "6"))))
+    except ValueError:
+        return 6
+
+
+def fridge_locked(fridge_id: str) -> bool:
+    return db.get_setting(f"fridge_locked:{fridge_id}", "0") == "1"
+
+
+def _managers_for_fridge(fridge_id: str) -> list[dict]:
+    """该楼的宿管/超管；楼内没有则退回全部宿管/超管。"""
+    rs = rows("SELECT u.* FROM users u JOIN buildings b ON b.name=u.building "
+              "WHERE b.fridge_id=? AND u.role IN ('manager','admin')", (fridge_id,))
+    return rs or rows("SELECT * FROM users WHERE role IN ('manager','admin')")
+
+
+def _reminded(user_id: int, channel: str, detail_prefix: str) -> bool:
+    r = db.conn().execute(
+        "SELECT id FROM reminders WHERE user_id=? AND channel=? AND detail LIKE ? LIMIT 1",
+        (user_id, channel, detail_prefix + "%")).fetchone()
+    return bool(r)
+
+
+def _log_reminder(item_id, user_id, channel: str, ok: bool, msg: str):
+    db.conn().execute(
+        "INSERT INTO reminders(item_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)",
+        (item_id, user_id, channel, "sent" if ok else "skipped", msg))
 
 
 async def auto_remind_loop():
@@ -76,29 +109,101 @@ async def auto_remind_loop():
         await asyncio.sleep(50)
 
 
-async def overdue_escalate_loop():
-    """每 6 小时扫一遍：超期 ESCALATE_DAYS 天仍在库的物品打上 escalated 标记，
-    进入宿管「超期待处理」清单（只提醒人，不自动清理）。"""
+async def run_batch_reminders() -> int:
+    """批次提醒：存放至次日起算第 7 天提醒学生+宿管，第 8 天催宿管清理并升级。"""
+    today = date.today()
+    items = rows("SELECT i.*, u.openid AS owner_openid FROM items i "
+                 "JOIN users u ON u.id=i.user_id "
+                 "WHERE i.status IN ('active','pending_claim')")
+    sent = 0
+    mgr_todo: dict[str, list[dict]] = {}
+    for it in items:
+        try:
+            keep = date.fromisoformat((it.get("expire_at") or "")[:10])
+        except ValueError:
+            continue
+        overdue = (today - keep).days
+        if overdue < 1:
+            continue
+        tag = f"{it.get('batch_no') or '?'}|{it['expire_at']}|{it['code']}"
+        if not _reminded(it["user_id"], "batch7", tag):
+            ok, msg = await wx.send_batch(it["owner_openid"], it["name"],
+                                          it["expire_at"], overdue)
+            _log_reminder(it["id"], it["user_id"], "batch7", ok, f"{tag} {msg}")
+            sent += 1
+        if overdue >= 2:
+            mgr_todo.setdefault(it["fridge_id"], []).append(it)
+            if not it.get("escalated"):
+                db.conn().execute("UPDATE items SET escalated=1 WHERE id=?", (it["id"],))
+    for fridge, its in mgr_todo.items():
+        by_batch: dict[str, list[dict]] = {}
+        for it in its:
+            by_batch.setdefault(str(it.get("batch_no") or "?"), []).append(it)
+        for bno, group in by_batch.items():
+            cycle = min(g["expire_at"] for g in group)
+            tag = f"batch{bno}|{cycle}|{fridge}"
+            for m in _managers_for_fridge(fridge):
+                if _reminded(m["id"], "batch8", tag):
+                    continue
+                ok, msg = await wx.send_batch_mgr(
+                    m["openid"], f"编号{bno}待清理", today.isoformat(), len(group),
+                    "存放超期未取，请前往清理")
+                _log_reminder(None, m["id"], "batch8", ok, f"{tag} {msg}")
+                sent += 1
+    if sent:
+        db.log_event("batch_remind", "system", f"超期批次提醒 {sent} 条")
+    return sent
+
+
+async def batch_remind_loop():
     while True:
         try:
-            cutoff = (datetime.now() - timedelta(days=ESCALATE_DAYS)).strftime("%Y-%m-%d")
-            ids = [r["id"] for r in rows(
-                "SELECT id FROM items WHERE status='active' AND escalated=0 AND expire_at < ?",
-                (cutoff,))]
-            if ids:
-                c = db.conn()
-                for i in ids:
-                    c.execute("UPDATE items SET escalated=1 WHERE id=?", (i,))
-                db.log_event("overdue_escalate", "system", f"{len(ids)} 件超期未处理，进入宿管待办")
+            await run_batch_reminders()
         except Exception as e:
-            print(f"[overdue_escalate] 失败: {e}")
-        await asyncio.sleep(6 * 3600)
+            print(f"[batch_remind] 失败: {e}")
+        await asyncio.sleep(3600)
+
+
+async def awaiting_scan_loop():
+    """登记后 5 分钟内未扫标签/未输码 -> 作废；门自始至终没开，物品没进箱。"""
+    while True:
+        try:
+            cutoff = (datetime.now() - timedelta(minutes=AWAIT_SCAN_MINUTES)
+                      ).strftime("%Y-%m-%d %H:%M:%S")
+            rs = rows("SELECT id FROM items WHERE status='awaiting_scan' AND created_at < ?",
+                      (cutoff,))
+            for r in rs:
+                db.conn().execute("UPDATE items SET status='cancelled' WHERE id=?", (r["id"],))
+            if rs:
+                db.log_event("awaiting_void", "system", f"{len(rs)} 条登记未扫码，已作废")
+        except Exception as e:
+            print(f"[awaiting] 失败: {e}")
+        await asyncio.sleep(60)
+
+
+async def queue_expire_loop():
+    """满柜排队超过 24 小时未完成 -> 过期，避免宿管清单越积越多。"""
+    while True:
+        try:
+            cutoff = (datetime.now() - timedelta(hours=QUEUE_EXPIRE_HOURS)
+                      ).strftime("%Y-%m-%d %H:%M:%S")
+            rs = rows("SELECT id FROM queue WHERE status IN ('waiting','notified') "
+                      "AND created_at < ?", (cutoff,))
+            for r in rs:
+                db.conn().execute("UPDATE queue SET status='expired' WHERE id=?", (r["id"],))
+            if rs:
+                db.log_event("queue_expire", "system", f"{len(rs)} 人排队超时未到店")
+        except Exception as e:
+            print(f"[queue_expire] 失败: {e}")
+        await asyncio.sleep(3600)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
-    tasks = [asyncio.create_task(overdue_escalate_loop())]
+    tasks = [asyncio.create_task(batch_remind_loop()),
+             asyncio.create_task(awaiting_scan_loop()),
+             asyncio.create_task(queue_expire_loop())]
     if AUTO.get("enabled"):
         tasks.append(asyncio.create_task(auto_remind_loop()))
     yield
@@ -261,7 +366,7 @@ def update_me(req: ProfileReq, user: dict = Depends(me_dep)):
 # ---------- 物品登记（共用）----------
 class ItemReq(BaseModel):
     name: str
-    expire_at: str                       # YYYY-MM-DD
+    expire_at: str = ""                  # 可选：直接指定存放至；留空按全局存放天数
     category: str = ""
     quantity: int = 1
     fridge_id: str = "fridge-01"
@@ -294,33 +399,46 @@ def ensure_unclaimed_user() -> dict:
     return dict(row)
 
 
-async def new_item(name: str, category: str, quantity: int, expire_at: str,
-                   fridge_id: str, user_id: int, actor: str, status: str = "active") -> dict:
+async def new_item(name: str, category: str, quantity: int, keep_until: str,
+                   fridge_id: str, user_id: int, actor: str, status: str = "active",
+                   stored_at: str = "") -> dict:
     if not name.strip():
         raise HTTPException(400, "物品名不能为空")
     try:
-        expire_at = datetime.strptime(expire_at[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        keep_until = datetime.strptime(keep_until[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
     except ValueError:
-        raise HTTPException(400, "到期日格式应为 YYYY-MM-DD")
+        raise HTTPException(400, "存放至日期格式应为 YYYY-MM-DD")
+    stored_at = (stored_at or date.today().isoformat())[:10]
+    try:
+        datetime.strptime(stored_at, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "存放日期格式应为 YYYY-MM-DD")
+    bno = batch.batch_no(stored_at)
     code = gen_code()
     c = db.conn()
     cur = c.execute(
-        "INSERT INTO items(code,user_id,fridge_id,name,category,quantity,expire_at,status) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (code, user_id, fridge_id, name.strip(), category, quantity, expire_at, status))
+        "INSERT INTO items(code,user_id,fridge_id,name,category,quantity,expire_at,status,"
+        "stored_at,batch_no) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (code, user_id, fridge_id, name.strip(), category, quantity, keep_until, status,
+         stored_at, bno))
     item_id = cur.lastrowid
-    db.log_event("item_add", actor, f"{code} {name} 到期{expire_at}")
+    db.log_event("item_add", actor, f"{code} {name} 存放至{keep_until} 编号{bno}")
     print_status = "disabled"          # 未配置方案B本机派 API
     if PI_LOCAL:
         try:
             async with httpx.AsyncClient(timeout=5) as cl:
+                owner = c.execute("SELECT name, room FROM users WHERE id=?",
+                                  (user_id,)).fetchone()
                 rr = await cl.post(f"{PI_LOCAL}/api/print", json={
-                    "code": code, "name": name, "expire_at": expire_at})
+                    "code": code, "name": name, "batch_no": str(bno),
+                    "keep_until": keep_until, "owner_name": owner["name"] if owner else "",
+                    "room": owner["room"] if owner else ""})
                 print_status = "queued" if rr.status_code == 200 else "failed"
         except Exception:
             print_status = "pi_unreachable"
-    return {"item_id": item_id, "code": code,
-            "color": colors.color_of(expire_at, WARN_DAYS), "print": print_status}
+    return {"item_id": item_id, "code": code, "batch_no": bno, "keep_until": keep_until,
+            "stored_at": stored_at,
+            "color": colors.color_of(keep_until, WARN_DAYS), "print": print_status}
 
 
 # ---------- 学生：补录登记（主入口在触控屏）+ 我的物品 ----------
@@ -337,7 +455,8 @@ def _building_fridge(user: dict, fallback: str) -> str:
 @app.post("/api/v1/items")
 async def create_item(req: ItemReq, user: dict = Depends(me_dep)):
     enforce_quota(user["id"], user["role"])
-    return await new_item(req.name, req.category, req.quantity, req.expire_at,
+    keep = req.expire_at or batch.keep_until(date.today(), storage_days())
+    return await new_item(req.name, req.category, req.quantity, keep,
                           _building_fridge(user, req.fridge_id), user["id"], user["openid"])
 
 
@@ -349,6 +468,10 @@ async def claim_item(code: str, user: dict = Depends(me_dep)):
         raise HTTPException(404, "标签编码不存在")
     if row["status"] in ("taken_out", "removed"):
         raise HTTPException(400, "物品已归档，无法认领")
+    if row["status"] == "awaiting_scan":
+        raise HTTPException(400, "物品还没完成入库（未扫码贴标），稍后再认领")
+    if row["status"] == "cancelled":
+        raise HTTPException(400, "该标签登记已作废")
     un = ensure_unclaimed_user()
     if row["user_id"] == user["id"]:
         return {"ok": True, "msg": "已是你的物品", "item_id": row["id"], "name": row["name"]}
@@ -540,9 +663,9 @@ def item_action(item_id: int, req: ItemActionReq, user: dict = Depends(me_dep)):
                      f"{row['code']} {row['name']} -> {new_name}")
         return {"ok": True, "name": new_name}
 
-    if req.action == "expire":         # 到期日只有宿管/超管能改（学生取出后重新存放即可）
-        if not is_manager:
-            raise HTTPException(403, "到期日仅宿管可修改")
+    if req.action == "expire":         # 存放至只有超管能改（学生取出后重新存放即可）
+        if user["role"] != "admin":
+            raise HTTPException(403, "存放至仅超级管理员可修改")
         try:
             new_date = datetime.strptime(req.value[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
@@ -886,7 +1009,8 @@ def login_confirm(req: TicketReq, user: dict = Depends(me_dep)):
         raise HTTPException(400, "该登录码已被他人使用")
     t.update(status="confirmed", confirmed_at=time.time(),
              user={"id": user["id"], "openid": user["openid"],
-                   "name": user["name"], "room": user["room"]})
+                   "name": user["name"], "room": user["room"],
+                   "role": user["role"]})
     db.log_event("kiosk_login", user["openid"], f"{user['name']} 屏幕登录")
     return {"ok": True, "name": user["name"]}
 
@@ -903,7 +1027,8 @@ def login_status(ticket: str):
         return {"status": "expired"}
     u = t["user"]
     return {"status": t["status"],
-            "user": {"name": u["name"], "room": u["room"]} if t["status"] == "confirmed" else None}
+            "user": {"name": u["name"], "room": u["room"], "role": u.get("role", "student")}
+                    if t["status"] == "confirmed" else None}
 
 
 @app.get("/api/v1/admin/export-rows")
@@ -944,38 +1069,85 @@ class KioskUnlockReq(BaseModel):
 class KioskItemReq(BaseModel):
     name: str
     category: str = "其他"
-    expire_at: str
     quantity: int = 1
     fridge_id: str = "fridge-01"
     login_ticket: str = ""
+    expire_at: str = ""        # 可选：直接指定存放至；留空按全局存放天数
 
 
 @app.post("/api/v1/kiosk/items")
 async def kiosk_create_item(req: KioskItemReq, _: None = Depends(_pi_auth)):
-    """触控屏拍照登记：物品归属=屏幕扫码登录者；建台账+打印标签+直接下发开锁。"""
+    """触控屏登记：只建待入库台账 + 打印标签，不开锁；
+    贴好标签扫二维码/输 8 位编码后 confirm-store 才真正入库并开锁。"""
     user = _ticket_user(req.login_ticket)
     if not user:
         raise HTTPException(400, "请先在屏幕上扫码登录后再登记")
     role_row = db.conn().execute("SELECT role FROM users WHERE id=?", (user["id"],)).fetchone()
     role = role_row["role"] if role_row else "student"
+    if role == "student" and fridge_locked(req.fridge_id):
+        raise HTTPException(403, "冰箱已满，暂停存入，请点「登记排队」")
+    keep = req.expire_at or batch.keep_until(date.today(), storage_days())
     if role in ("manager", "admin"):
-        # 宿管/超管登记的多为无主物品：挂"未认领"名下，直接进待认领区，等学生扫码认领
+        # 宿管/超管登记的多为无主物品：挂"未认领"名下，入库后直接进待认领区
         owner = ensure_unclaimed_user()
-        d = await new_item(req.name, req.category, req.quantity, req.expire_at,
+        d = await new_item(req.name, req.category, req.quantity, keep,
                            req.fridge_id, owner["id"], f"kiosk-mgr:{user['name']}",
-                           status="pending_claim")
-        d["status"] = "pending_claim"
+                           status="awaiting_scan")
+        d["owner_name"], d["room"] = owner["name"], owner["room"]
+        d["will_be"] = "pending_claim"
     else:
         enforce_quota(user["id"], role)
-        d = await new_item(req.name, req.category, req.quantity, req.expire_at,
-                           req.fridge_id, user["id"], f"kiosk:{user['name']}")
+        d = await new_item(req.name, req.category, req.quantity, keep,
+                           req.fridge_id, user["id"], f"kiosk:{user['name']}",
+                           status="awaiting_scan")
+        d["owner_name"], d["room"] = user["name"], user["room"]
+        d["will_be"] = "active"
+    d["status"] = "awaiting_scan"
+    db.log_event("kiosk_add", user["openid"],
+                 f"{d['code']} {req.name} 编号{d['batch_no']} 待扫码入库")
+    return d
+
+
+@app.post("/api/v1/kiosk/items/{code}/confirm-store")
+def kiosk_confirm_store(code: str, _: None = Depends(_pi_auth)):
+    """贴好标签后扫码/输 8 位编码：5 分钟内有效，转正式入库并下发开锁。"""
+    row = dict(db.conn().execute("SELECT * FROM items WHERE code=?",
+                                 (code.strip().upper(),)).fetchone() or {})
+    if not row:
+        raise HTTPException(404, "标签编码不存在")
+    if row["status"] in ("active", "pending_claim"):
+        return {"ok": True, "already": True, "code": row["code"], "name": row["name"],
+                "status": row["status"], "batch_no": row["batch_no"],
+                "keep_until": row["expire_at"]}
+    if row["status"] != "awaiting_scan":
+        raise HTTPException(400, "该标签已作废，请重新登记")
+    try:
+        created = datetime.strptime(str(row["created_at"])[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        created = datetime.now()
+    if datetime.now() - created > timedelta(minutes=AWAIT_SCAN_MINUTES):
+        db.conn().execute("UPDATE items SET status='cancelled' WHERE id=?", (row["id"],))
+        raise HTTPException(400, "登记已超时作废（超过 5 分钟），请重新登记")
+    un = ensure_unclaimed_user()
+    final = "pending_claim" if row["user_id"] == un["id"] else "active"
+    db.conn().execute("UPDATE items SET status=? WHERE id=?", (final, row["id"]))
     ts = int(time.time())
-    token = sign_unlock(d["code"], ts, PI_SECRET)
+    token = sign_unlock(row["code"], ts, PI_SECRET)
     db.conn().execute(
         "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token,actor) VALUES(?,?,?,?,?,?)",
-        (d["item_id"], req.fridge_id, d["code"], ts, token, user["openid"]))
-    db.log_event("kiosk_add", user["openid"], f"{d['code']} {req.name} 开锁存入")
-    return d
+        (row["id"], row["fridge_id"], row["code"], ts, token, "kiosk"))
+    # 完成排队闭环：本人有在排的，存入成功后置 fulfilled
+    q = db.conn().execute(
+        "SELECT id FROM queue WHERE user_id=? AND fridge_id=? "
+        "AND status IN ('waiting','notified') ORDER BY id LIMIT 1",
+        (row["user_id"], row["fridge_id"])).fetchone()
+    if q:
+        db.conn().execute("UPDATE queue SET status='fulfilled', fulfilled_item_id=? WHERE id=?",
+                          (row["id"], q["id"]))
+    db.log_event("kiosk_confirm_store", "kiosk",
+                 f"{row['code']} {row['name']} 编号{row['batch_no']} 扫码入库并开锁")
+    return {"ok": True, "code": row["code"], "name": row["name"], "status": final,
+            "batch_no": row["batch_no"], "keep_until": row["expire_at"]}
 
 
 class TakeoutDoneReq(BaseModel):
@@ -1027,15 +1199,417 @@ def kiosk_unlock(req: KioskUnlockReq, _: None = Depends(_pi_auth)):
     row = db.conn().execute("SELECT * FROM items WHERE code=?", (req.code.strip(),)).fetchone()
     if not row:
         raise HTTPException(404, "标签编码不存在")
-    if row["status"] != "active":
+    if row["status"] == "awaiting_scan":
+        raise HTTPException(400, "这件物品还没完成入库：请先扫描或输入刚打印的标签编码")
+    if row["status"] not in ("active", "pending_claim"):
         raise HTTPException(400, "物品不在库（已取出登记或已清理）")
     ts = int(time.time())
     token = sign_unlock(row["code"], ts, PI_SECRET)
     db.conn().execute(
         "INSERT INTO unlock_commands(item_id,fridge_id,code,ts,token,actor) VALUES(?,?,?,?,?,?)",
         (row["id"], row["fridge_id"], row["code"], ts, token, "kiosk"))
-    db.log_event("kiosk_unlock", "kiosk", f"{row['code']} {row['name']}")
-    return {"ok": True, "code": row["code"], "name": row["name"]}
+    db.log_event("kiosk_unlock", "kiosk",
+                 f"{row['code']} {row['name']}" + ("（待认领）" if row["status"] == "pending_claim" else ""))
+    return {"ok": True, "code": row["code"], "name": row["name"],
+            "status": row["status"]}
+
+
+# ---------- 触控屏：满柜排队 / 呼叫宿管 / 状态 ----------
+def _resolve_fridge(fridge_id: str = "", building: str = "") -> str:
+    if fridge_id:
+        return fridge_id.strip()
+    if building:
+        row = db.conn().execute("SELECT fridge_id FROM buildings WHERE name=?",
+                                (building.strip(),)).fetchone()
+        if not row:
+            raise HTTPException(404, "楼宇不存在")
+        return row["fridge_id"]
+    return "fridge-01"
+
+
+def _queue_position(fridge_id: str, qid: int) -> int:
+    return db.conn().execute(
+        "SELECT COUNT(*) FROM queue WHERE fridge_id=? AND status IN ('waiting','notified') "
+        "AND id<=?", (fridge_id, qid)).fetchone()[0]
+
+
+async def notify_queue(fridge_id: str, actor: str = "system", renotify: bool = False) -> int:
+    """通知排队学生冰箱已空出；手动补发时对已通知的做 1 小时冷却。"""
+    qs = rows("SELECT q.*, u.openid FROM queue q JOIN users u ON u.id=q.user_id "
+              "WHERE q.fridge_id=? AND q.status IN ('waiting','notified') ORDER BY q.id",
+              (fridge_id,))
+    now = datetime.now()
+    sent = 0
+    for q in qs:
+        if q["status"] == "notified":
+            if not renotify:
+                continue
+            try:
+                last = datetime.strptime(str(q["notified_at"])[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                last = None
+            if last and now - last < timedelta(hours=1):
+                continue
+        pos = _queue_position(fridge_id, q["id"])
+        ok, msg = await wx.send_queue(q["openid"], q["item_name"],
+                                      date.today().isoformat(), pos)
+        _log_reminder(None, q["user_id"], "queue", ok, f"queue#{q['id']} pos={pos} {msg}")
+        db.conn().execute(
+            "UPDATE queue SET status='notified', notified_at=datetime('now','localtime') "
+            "WHERE id=?", (q["id"],))
+        sent += 1
+    if sent:
+        db.log_event("queue_notify", actor, f"{fridge_id} 通知 {sent} 人")
+    return sent
+
+
+@app.get("/api/v1/kiosk/state")
+def kiosk_state(fridge_id: str = "fridge-01", _: None = Depends(_pi_auth)):
+    """触控屏：当前是否上锁、存放天数、当天批次编号。"""
+    return {"fridge_id": fridge_id, "locked": fridge_locked(fridge_id),
+            "storage_days": storage_days(), "batch_no": batch.batch_no(date.today()),
+            "today": date.today().isoformat()}
+
+
+class KioskQueueReq(BaseModel):
+    login_ticket: str = ""
+    name: str
+    category: str = "其他"
+    quantity: int = 1
+    fridge_id: str = "fridge-01"
+
+
+@app.post("/api/v1/kiosk/queue")
+def kiosk_queue_join(req: KioskQueueReq, _: None = Depends(_pi_auth)):
+    """满柜排队登记：不建台账、不打印标签、不开锁。"""
+    user = _ticket_user(req.login_ticket)
+    if not user:
+        raise HTTPException(400, "请先在屏幕上扫码登录")
+    if not fridge_locked(req.fridge_id):
+        raise HTTPException(400, "冰箱现在可以正常存入，请直接登记")
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "请填写物品名称")
+    c = db.conn()
+    row = c.execute("SELECT * FROM queue WHERE user_id=? AND fridge_id=? "
+                    "AND status IN ('waiting','notified') ORDER BY id LIMIT 1",
+                    (user["id"], req.fridge_id)).fetchone()
+    if row:
+        c.execute("UPDATE queue SET item_name=?, category=?, quantity=? WHERE id=?",
+                  (name, req.category, max(1, req.quantity), row["id"]))
+        qid, updated = row["id"], True
+    else:
+        cur = c.execute("INSERT INTO queue(fridge_id,user_id,item_name,category,quantity) "
+                        "VALUES(?,?,?,?,?)",
+                        (req.fridge_id, user["id"], name, req.category,
+                         max(1, req.quantity)))
+        qid, updated = cur.lastrowid, False
+    pos = _queue_position(req.fridge_id, qid)
+    db.log_event("queue_join", user["openid"], f"{name} 第{pos}位")
+    return {"ok": True, "id": qid, "position": pos, "updated": updated}
+
+
+@app.get("/api/v1/kiosk/my-queue")
+def kiosk_my_queue(login_ticket: str, fridge_id: str = "fridge-01"):
+    user = _ticket_user(login_ticket)
+    if not user:
+        raise HTTPException(401, "登录已失效，请重新扫码")
+    row = db.conn().execute("SELECT * FROM queue WHERE user_id=? AND fridge_id=? "
+                            "AND status IN ('waiting','notified') ORDER BY id LIMIT 1",
+                            (user["id"], fridge_id)).fetchone()
+    if not row:
+        return {"queue": None, "locked": fridge_locked(fridge_id)}
+    q = dict(row)
+    q["position"] = _queue_position(fridge_id, q["id"])
+    return {"queue": q, "locked": fridge_locked(fridge_id)}
+
+
+class QueueCancelReq(BaseModel):
+    login_ticket: str = ""
+    id: int = 0
+
+
+@app.post("/api/v1/kiosk/queue/cancel")
+def kiosk_queue_cancel(req: QueueCancelReq, _: None = Depends(_pi_auth)):
+    user = _ticket_user(req.login_ticket)
+    if not user:
+        raise HTTPException(401, "登录已失效，请重新扫码")
+    row = db.conn().execute("SELECT * FROM queue WHERE user_id=? AND status IN "
+                            "('waiting','notified') ORDER BY id LIMIT 1",
+                            (user["id"],)).fetchone()
+    if not row:
+        return {"ok": True, "cancelled": False}
+    db.conn().execute("UPDATE queue SET status='cancelled' WHERE id=?", (row["id"],))
+    db.log_event("queue_cancel", user["openid"], f"{row['item_name']}")
+    return {"ok": True, "cancelled": True}
+
+
+class CallReq(BaseModel):
+    fridge_id: str = "fridge-01"
+    kind: str                  # unlock | full | supply
+    note: str = ""
+
+
+CALL_KINDS = ("unlock", "full", "supply")
+
+
+@app.post("/api/v1/kiosk/call")
+def kiosk_call(req: CallReq, _: None = Depends(_pi_auth)):
+    """匿名呼叫宿管：不记录 openid/姓名，只留冰箱与种类。"""
+    if req.kind not in CALL_KINDS:
+        raise HTTPException(400, "未知呼叫类型")
+    cutoff = (datetime.now() - timedelta(seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
+    dup = db.conn().execute(
+        "SELECT id FROM calls WHERE fridge_id=? AND kind=? AND status='open' "
+        "AND created_at >= ?", (req.fridge_id, req.kind, cutoff)).fetchone()
+    if dup:
+        return {"ok": True, "deduped": True}
+    db.conn().execute("INSERT INTO calls(fridge_id,kind,note) VALUES(?,?,?)",
+                      (req.fridge_id, req.kind, req.note.strip()[:255]))
+    db.log_event("call", "kiosk", f"{req.fridge_id} {req.kind}")
+    return {"ok": True, "deduped": False}
+
+
+# ---------- 宿管：上锁 / 排队清单 / 呼叫 / 清理提醒 / 存放天数 ----------
+class FridgeLockReq(BaseModel):
+    locked: bool
+    fridge_id: str = ""
+    building: str = ""
+
+
+@app.post("/api/v1/fridge/lock")
+async def set_fridge_lock(req: FridgeLockReq, user: dict = Depends(manager_dep)):
+    """线上加锁（冰箱已满）：只拦学生存入，取出/查看不受影响。解除时自动通知排队学生。"""
+    fridge = _resolve_fridge(req.fridge_id, req.building)
+    db.set_setting(f"fridge_locked:{fridge}", "1" if req.locked else "0")
+    db.log_event("fridge_lock", user["openid"],
+                 f"{fridge} -> {'已满上锁' if req.locked else '解除上锁'}")
+    notified = 0
+    if not req.locked:
+        notified = await notify_queue(fridge, user["openid"])
+    return {"ok": True, "fridge_id": fridge, "locked": req.locked, "notified": notified}
+
+
+@app.get("/api/v1/fridge/state")
+def fridge_state(building: str = "", fridge_id: str = "",
+                 _: dict = Depends(manager_dep)):
+    fridge = _resolve_fridge(fridge_id, building)
+    queued = db.conn().execute(
+        "SELECT COUNT(*) FROM queue WHERE fridge_id=? AND status IN ('waiting','notified')",
+        (fridge,)).fetchone()[0]
+    calls = db.conn().execute(
+        "SELECT COUNT(*) FROM calls WHERE fridge_id=? AND status='open'",
+        (fridge,)).fetchone()[0]
+    return {"fridge_id": fridge, "locked": fridge_locked(fridge),
+            "queue_count": queued, "open_calls": calls,
+            "storage_days": storage_days()}
+
+
+@app.get("/api/v1/queue")
+def list_queue(status: str = "open", building: str = "",
+               _: dict = Depends(manager_dep)):
+    where, args = "1=1", []
+    if status == "open":
+        where += " AND q.status IN ('waiting','notified')"
+    elif status and status != "all":
+        where += " AND q.status=?"
+        args.append(status)
+    if building:
+        where += " AND q.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)"
+        args.append(building)
+    qs = rows("SELECT q.*, u.name AS user_name, u.room, b.name AS building "
+              "FROM queue q JOIN users u ON u.id=q.user_id "
+              "LEFT JOIN buildings b ON b.fridge_id=q.fridge_id "
+              f"WHERE {where} ORDER BY q.id", args)
+    for q in qs:
+        q["position"] = _queue_position(q["fridge_id"], q["id"])
+    return {"queue": qs}
+
+
+@app.get("/api/v1/queue/mine")
+def my_queue(user: dict = Depends(me_dep)):
+    """学生查看自己在排队中的登记（满柜后扫码登记的那条）。"""
+    fridge = _building_fridge(user, "fridge-01")
+    row = db.conn().execute(
+        "SELECT * FROM queue WHERE user_id=? AND fridge_id=? "
+        "AND status IN ('waiting','notified') ORDER BY id LIMIT 1",
+        (user["id"], fridge)).fetchone()
+    if not row:
+        return {"queue": None, "locked": fridge_locked(fridge)}
+    q = dict(row)
+    q["position"] = _queue_position(fridge, q["id"])
+    return {"queue": q, "locked": fridge_locked(fridge)}
+
+
+@app.post("/api/v1/queue/mine/cancel")
+def cancel_my_queue(user: dict = Depends(me_dep)):
+    fridge = _building_fridge(user, "fridge-01")
+    row = db.conn().execute(
+        "SELECT id, item_name FROM queue WHERE user_id=? AND fridge_id=? "
+        "AND status IN ('waiting','notified') ORDER BY id LIMIT 1",
+        (user["id"], fridge)).fetchone()
+    if not row:
+        return {"ok": True, "cancelled": False}
+    db.conn().execute("UPDATE queue SET status='cancelled' WHERE id=?", (row["id"],))
+    db.log_event("queue_cancel", user["openid"], row["item_name"])
+    return {"ok": True, "cancelled": True}
+
+
+class QueueNotifyReq(BaseModel):
+    fridge_id: str = ""
+    building: str = ""
+
+
+@app.post("/api/v1/queue/notify")
+async def queue_notify(req: QueueNotifyReq, user: dict = Depends(manager_dep)):
+    fridge = _resolve_fridge(req.fridge_id, req.building)
+    n = await notify_queue(fridge, user["openid"], renotify=True)
+    return {"ok": True, "sent": n, "fridge_id": fridge}
+
+
+@app.get("/api/v1/calls")
+def list_calls(status: str = "open", building: str = "",
+               _: dict = Depends(manager_dep)):
+    where, args = "1=1", []
+    if status and status != "all":
+        where += " AND c.status=?"
+        args.append(status)
+    if building:
+        where += " AND c.fridge_id IN (SELECT fridge_id FROM buildings WHERE name=?)"
+        args.append(building)
+    cs = rows("SELECT c.*, b.name AS building FROM calls c "
+              "LEFT JOIN buildings b ON b.fridge_id=c.fridge_id "
+              f"WHERE {where} ORDER BY c.id DESC LIMIT 100", args)
+    labels = {"unlock": "申请开锁", "full": "冰箱已满", "supply": "缺少耗材"}
+    for c in cs:
+        c["kind_label"] = labels.get(c["kind"], c["kind"])
+    open_n = db.conn().execute("SELECT COUNT(*) FROM calls WHERE status='open'").fetchone()[0]
+    return {"calls": cs, "open_count": open_n}
+
+
+@app.post("/api/v1/calls/{call_id}/done")
+def call_done(call_id: int, user: dict = Depends(manager_dep)):
+    row = db.conn().execute("SELECT id FROM calls WHERE id=?", (call_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "呼叫不存在")
+    db.conn().execute(
+        "UPDATE calls SET status='done', handled_at=datetime('now','localtime'), "
+        "handled_by=? WHERE id=?", (user["openid"], call_id))
+    db.log_event("call_done", user["openid"], f"call#{call_id}")
+    return {"ok": True}
+
+
+class StorageDaysReq(BaseModel):
+    days: int
+
+
+@app.get("/api/v1/settings/storage-days")
+def get_storage_days(_: dict = Depends(manager_dep)):
+    return {"days": storage_days()}
+
+
+@app.post("/api/v1/settings/storage-days")
+def set_storage_days(req: StorageDaysReq, admin: dict = Depends(admin_dep)):
+    if not (1 <= req.days <= 60):
+        raise HTTPException(400, "存放天数需在 1~60 天之间")
+    db.set_setting("storage_days", req.days)
+    db.log_event("storage_days_set", admin["openid"], f"{req.days} 天")
+    return {"ok": True, "days": req.days}
+
+
+class KeepUntilReq(BaseModel):
+    keep_until: str
+
+
+@app.post("/api/v1/items/{item_id}/keep-until")
+def set_keep_until(item_id: int, req: KeepUntilReq, admin: dict = Depends(admin_dep)):
+    """单件物品改存放至（仅超管）。"""
+    try:
+        keep = datetime.strptime(req.keep_until[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "存放至格式应为 YYYY-MM-DD")
+    row = db.conn().execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "物品不存在")
+    db.conn().execute("UPDATE items SET expire_at=?, escalated=0 WHERE id=?",
+                      (keep, item_id))
+    db.log_event("keep_until_edit", admin["openid"],
+                 f"{row['code']} {row['name']} {row['expire_at']} -> {keep}")
+    return {"ok": True, "keep_until": keep}
+
+
+@app.post("/api/v1/items/{item_id}/notify-cleaned")
+async def notify_cleaned(item_id: int, user: dict = Depends(manager_dep)):
+    """宿管清理后的通知：告诉学生物品已被清理，请到宿管处确认。"""
+    row = db.conn().execute(
+        "SELECT i.*, u.openid AS owner_openid FROM items i "
+        "JOIN users u ON u.id=i.user_id WHERE i.id=?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "物品不存在")
+    un = ensure_unclaimed_user()
+    if row["user_id"] == un["id"]:
+        raise HTTPException(400, "无主物品，没有可提醒的学生")
+    if row["status"] not in ("removed", "taken_out"):
+        raise HTTPException(400, "请先完成清理留痕，再提醒学生")
+    ok, msg = await wx.send_cleaned(row["owner_openid"], row["name"],
+                                    date.today().isoformat())
+    _log_reminder(item_id, row["user_id"], "cleaned", ok, msg)
+    db.log_event("cleaned_notify", user["openid"], f"{row['code']} {row['name']}")
+    return {"ok": ok, "msg": msg}
+
+
+class OfflineItem(BaseModel):
+    code: str
+    name: str
+    category: str = "其他"
+    keep_until: str = ""
+    expire_at: str = ""        # 兼容旧版离线队列
+    quantity: int = 1
+    fridge_id: str = "fridge-01"
+    stored_at: str = ""
+    batch_no: int | None = None
+
+
+class OfflineItemsReq(BaseModel):
+    items: list[OfflineItem]
+
+
+@app.post("/api/v1/pi/offline-items")
+def pi_offline_items(req: OfflineItemsReq, _: None = Depends(_pi_auth)):
+    """断网期间在派本机登记的物品：联网后按标签编码幂等补录进待认领区。"""
+    c = db.conn()
+    owner = ensure_unclaimed_user()
+    created, skipped, invalid = [], [], []
+    for it in req.items:
+        code = it.code.strip().upper()
+        if not (4 <= len(code) <= 32) or not code.isalnum() or not it.name.strip():
+            invalid.append(it.code)
+            continue
+        keep_src = it.keep_until or it.expire_at
+        try:
+            keep = (datetime.strptime(keep_src[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+                    if keep_src else batch.keep_until(it.stored_at or date.today(),
+                                                      storage_days()))
+        except ValueError:
+            invalid.append(code)
+            continue
+        stored = (it.stored_at or date.today().isoformat())[:10]
+        try:
+            datetime.strptime(stored, "%Y-%m-%d")
+        except ValueError:
+            invalid.append(code)
+            continue
+        if c.execute("SELECT id FROM items WHERE code=?", (code,)).fetchone():
+            skipped.append(code)
+            continue
+        c.execute("INSERT INTO items(code,user_id,fridge_id,name,category,quantity,expire_at,"
+                  "status,stored_at,batch_no) VALUES(?,?,?,?,?,?,?,'pending_claim',?,?)",
+                  (code, owner["id"], it.fridge_id, it.name.strip(), it.category,
+                   max(1, it.quantity), keep, stored, batch.batch_no(stored)))
+        created.append(code)
+        db.log_event("offline_item_sync", "kiosk",
+                     f"{code} {it.name} 断网登记补录进待认领区")
+    return {"ok": True, "created": created, "skipped": skipped, "invalid": invalid}
 
 
 @app.get("/api/v1/pi/pending-unlocks")
@@ -1118,12 +1692,14 @@ def export_items_csv(status: str = "all", building: str = "",
     items = volume.attach(colors.decorate(rows(sql, args), WARN_DAYS))
     buf = io.StringIO()
     w = _csv.writer(buf)
-    w.writerow(["编码", "物品名", "类别", "数量", "主人", "寝室", "楼宇", "冰箱",
-                "到期日", "状态", "紧急度", "估算体积(L)", "登记时间"])
+    w.writerow(["编码", "编号", "物品名", "类别", "数量", "主人", "寝室", "楼宇", "冰箱",
+                "存放日期", "存放至", "状态", "紧急度", "估算体积(L)", "登记时间"])
     for it in items:
-        w.writerow([it["code"], it["name"], it["category"], it["quantity"],
+        w.writerow([it["code"], it.get("batch_no") or "", it["name"], it["category"],
+                    it["quantity"],
                     it["owner_name"], it["owner_room"], it.get("owner_building") or "未分楼",
-                    it["fridge_id"], it["expire_at"], st_label.get(it["status"], it["status"]),
+                    it["fridge_id"], it.get("stored_at") or it["created_at"][:10],
+                    it["expire_at"], st_label.get(it["status"], it["status"]),
                     it.get("color_label", ""), round((it.get("vol_est_ml") or 0) / 1000, 1),
                     it["created_at"]])
     db.log_event("export_csv", user["openid"], f"status={status} building={building or '全部'}")
@@ -1169,7 +1745,7 @@ def admin_backup_rows(_: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "logs-2026-10-15-1",
+    return {"ok": True, "build": "stored-2026-10-29-1",
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
