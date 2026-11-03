@@ -1,11 +1,13 @@
 [Unit]
 Description=Fridge Pi 锁控服务
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi/fridge_pi/pi
-ExecStart=/usr/bin/python3 /home/pi/fridge_pi/pi/app.py
+User=chen
+WorkingDirectory=/home/chen/fridge_pi/pi
+ExecStart=/home/chen/fridge_pi/.venv/bin/python3 /home/chen/fridge_pi/pi/app.py
 Restart=always
 RestartSec=5
 
