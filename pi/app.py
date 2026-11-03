@@ -37,12 +37,13 @@ classifier = LocalClassifier()
 printer = LabelPrinter(CFG["printer"]["name"], label_mm=CFG["printer"].get("label_mm", [40, 30]))
 button = None
 last_unlock: dict = {"code": "", "at": 0.0}   # 供触控屏取出页确认开锁已执行
-door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False}   # 反馈线监控：一次真实开合门
+door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False,
+                    "saw_open": False}   # 反馈线监控：一次真实开合门
 
 
 def mark_unlocked(code: str):
     last_unlock.update({"code": code, "at": time.time()})
-    door_watch.update(unlocked_at=time.time(), cycle_done=False)
+    door_watch.update(unlocked_at=time.time(), cycle_done=False, saw_open=False)
 
 
 def log_event(event: str, code: str, detail: str = ""):
@@ -257,14 +258,17 @@ def setup_button():
 
 
 async def watch_door():
-    """反馈线监控：开锁脉冲后若检测到锁舌重新压回（门被关好），记为一次真实开合门。"""
+    """反馈线监控：开锁脉冲后必须先看到锁舌弹开（未锁），再看到压回（上锁），才算一次真实开合门。"""
     while True:
         try:
-            if (lock.has_feedback and door_watch["unlocked_at"]
-                    and not door_watch["cycle_done"] and lock.is_locked
-                    and time.time() - door_watch["unlocked_at"] > 2):
-                door_watch["cycle_done"] = True
-                log_event("door_cycle", last_unlock.get("code", ""), "检测到门开过又关回")
+            if lock.has_feedback and door_watch["unlocked_at"] and not door_watch["cycle_done"]:
+                if not lock.is_locked:
+                    if not door_watch["saw_open"]:
+                        door_watch["saw_open"] = True
+                        log_event("door_open", last_unlock.get("code", ""), "检测到锁舌弹开")
+                elif door_watch["saw_open"] and time.time() - door_watch["unlocked_at"] > 2:
+                    door_watch["cycle_done"] = True
+                    log_event("door_cycle", last_unlock.get("code", ""), "检测到门开过又关回")
         except Exception as e:
             print(f"[door] 监控异常: {e}")
         await asyncio.sleep(0.5)
@@ -313,18 +317,54 @@ async def manual_lock():
     return {"status": "locked"}
 
 
+def _qr_variants(cv2, img):
+    """按代价从低到高产出解码候选图；命中即停，所以顺序有意义。
+    标签基本居中，故只放大中心区域（整图 2x 在派 3B 上要 1.7s，收益却和中心裁剪重叠）。"""
+    yield img
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    yield g
+    h, w = g.shape[:2]
+    crop = g[h // 8:h * 7 // 8, w // 8:w * 7 // 8]
+    yield cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    _, otsu = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    yield otsu
+    blur = cv2.GaussianBlur(g, (0, 0), 3)
+    yield cv2.addWeighted(g, 1.8, blur, -0.8, 0)   # 未自动对焦时靠锐化救回边缘
+
+
 def decode_qr_codes(image_path: Path) -> list[str]:
-    """识别照片中的标签二维码（物品编码）；原图失手时放大 2x 再扫一遍。"""
+    """识别照片中的标签二维码（物品编码）。
+
+    定焦摄像头贴近就糊，单靠 OpenCV 检测器成功率很低：先用 zxing-cpp 跑一组
+    预处理变体（灰度/中心放大/二值化/锐化），再退回 OpenCV 检测器兜底。
+    """
     try:
         import cv2
         img = cv2.imread(str(image_path))
-        det = cv2.QRCodeDetector()
-        ok, decoded, _, _ = det.detectAndDecodeMulti(img)
-        codes = [c for c in decoded if c] if ok else []
-        if not codes and img is not None:
-            big = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            ok2, decoded2, _, _ = det.detectAndDecodeMulti(big)
-            codes = [c for c in decoded2 if c] if ok2 else []
+        if img is None:
+            return []
+        codes: list[str] = []
+        try:
+            import zxingcpp
+            for var in _qr_variants(cv2, img):
+                for r in zxingcpp.read_barcodes(var):
+                    if r.text:
+                        codes.append(r.text.strip())
+                if codes:
+                    break
+        except ImportError:
+            pass
+        if not codes:
+            det = cv2.QRCodeDetector()
+            for var in (img, cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)):
+                ok, decoded, _, _ = det.detectAndDecodeMulti(var)
+                if ok:
+                    codes = [c.strip() for c in decoded if c]
+                if codes:
+                    break
+        # 标签码是 8 位字母数字；画面里若混进别的二维码，优先取像编码的那个
+        codes = [c.upper() for c in codes if c]
+        codes.sort(key=lambda c: 0 if len(c) == 8 and c.isalnum() else 1)
         return codes
     except Exception as e:
         print(f"[qr] 解码失败: {e}")
@@ -878,7 +918,8 @@ def read_last_unlock():
 def read_door_status():
     """触控屏用：是否有反馈线、当前是否上锁、最近一次开锁时刻、是否已完成一次开合门。"""
     return {"has_feedback": lock.has_feedback, "is_locked": lock.is_locked,
-            "unlocked_at": door_watch["unlocked_at"], "cycle_done": door_watch["cycle_done"]}
+            "unlocked_at": door_watch["unlocked_at"], "cycle_done": door_watch["cycle_done"],
+            "saw_open": door_watch["saw_open"]}
 
 
 if __name__ == "__main__":

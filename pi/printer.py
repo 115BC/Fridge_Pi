@@ -103,7 +103,10 @@ class LabelPrinter:
 
         owner = (owner_name or "未认领").strip()
         owner_line = f"{owner}-{room.strip()}" if (room or "").strip() else owner
-        lines = [(str(batch_no or ""), int(H * 0.30)),
+        # 大字印到期日的"号"（宿管按号清理），无到期日时退回批次号
+        day = keep_until[8:10]
+        big = str(int(day)) if len(keep_until) >= 10 and day.isdigit() else str(batch_no or "")
+        lines = [(big, int(H * 0.30)),
                  ((name or "").strip() or "未命名", int(H * 0.135)),
                  (owner_line, int(H * 0.105)),
                  (f"存放至 {keep_until[:10]}" if keep_until else "", int(H * 0.085))]

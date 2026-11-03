@@ -592,17 +592,25 @@ async function grabFrame() {
 }
 
 async function scanLabelTo(inputId, msgId) {
-  setMsg(msgId, "请将标签二维码对准摄像头，正在识别…", true);
-  try {
-    const res = await grabFrame();
+  // 定焦摄像头单帧很容易糊掉，这里连拍几帧再放弃（期间切页会自动停）
+  const hint = "请将标签二维码对准摄像头（距离 25~40cm，避免反光）";
+  for (let i = 0; i < 6; i++) {
+    setMsg(msgId, hint + "，正在识别（第 " + (i + 1) + "/6 次）…", true);
+    let res;
+    try {
+      res = await grabFrame();
+    } catch (e) { setMsg(msgId, "扫码失败：" + e.message, false); return ""; }
     if (res.qr_codes && res.qr_codes.length) {
       const code = res.qr_codes[0].trim().toUpperCase();
       document.getElementById(inputId).value = code;
       setMsg(msgId, "已识别标签 " + code, true);
       return code;
     }
-    setMsg(msgId, "未识别到二维码，请手动输入编码", false);
-  } catch (e) { setMsg(msgId, "扫码失败：" + e.message, false); }
+    const box = document.getElementById(inputId);
+    if (!box || !box.offsetParent) return "";      // 页面已切走
+    await new Promise(r => setTimeout(r, 400));
+  }
+  setMsg(msgId, "未识别到二维码，请手动输入编码", false);
   return "";
 }
 
