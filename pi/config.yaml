@@ -1,9 +1,15 @@
 # 树莓派端配置
 lock:
+  mode: gpio                # gpio=派直接控继电器；ble=交给 ESP32 锁控板（派不再碰 GPIO）
   gpio_pin: 17            # BCM 编号，物理引脚 11，接 MOSFET/继电器模块的 IN
   auto_relock_seconds: 60 # 解锁后超时自动落锁
   mock: false             # 非树莓派环境（如 Windows 开发调试）设 true；接真实电磁锁时保持 false
   button_gpio: 27         # 实体开锁按键：BCM27(物理13脚)对GND，按下=开锁(内部上拉)；删掉此行则不启用
+  # mode: ble 时用下面这段（GPIO 模式下忽略）
+  ble:
+    advertise_prefix: "FRIDGE-LOCK"   # 按广播名前缀扫描，需与固件 BLE_NAME 对应
+    device_id: "lock-01"              # 命令签名里的设备标识，需与固件 LOCK_DEVICE 一致
+    scan_timeout: 8
 
 camera:
   mock: false             # 无 libcamera-still 时自动模拟，无需手动开

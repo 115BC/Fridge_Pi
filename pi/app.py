@@ -28,22 +28,28 @@ ITEMS_FILE = BASE_DIR / "data" / "items.jsonl"
 OFFLINE_FILE = BASE_DIR / "data" / "offline_items.jsonl"
 VERSION = "1.5"
 
-lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
-                           feedback_pin=CFG["lock"].get("feedback_gpio"),
-                           pulse_seconds=CFG["lock"].get("pulse_seconds", 1.0),
-                           relock_estimate=CFG["lock"].get("auto_relock_seconds", 60))
+LOCK_MODE = CFG["lock"].get("mode", "gpio")   # gpio=派直控继电器；ble=交给 ESP32 锁控板
+if LOCK_MODE == "ble":
+    from lock_ble import BleLock
+    lock = BleLock(CFG["lock"].get("ble") or {}, CFG["security"]["secret"])
+else:
+    lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
+                               feedback_pin=CFG["lock"].get("feedback_gpio"),
+                               pulse_seconds=CFG["lock"].get("pulse_seconds", 1.0),
+                               relock_estimate=CFG["lock"].get("auto_relock_seconds", 60))
 camera = Camera(mock=CFG["camera"]["mock"])
 classifier = LocalClassifier()
 printer = LabelPrinter(CFG["printer"]["name"], label_mm=CFG["printer"].get("label_mm", [40, 30]))
 button = None
 last_unlock: dict = {"code": "", "at": 0.0}   # 供触控屏取出页确认开锁已执行
-door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False,
-                    "saw_open": False}   # 反馈线监控：一次真实开合门
+door_watch: dict = {"unlocked_at": 0.0, "cycle_done": False, "saw_open": False,
+                    "open_seq_base": 0}   # 反馈线监控：一次真实开合门
 
 
 def mark_unlocked(code: str):
     last_unlock.update({"code": code, "at": time.time()})
-    door_watch.update(unlocked_at=time.time(), cycle_done=False, saw_open=False)
+    door_watch.update(unlocked_at=time.time(), cycle_done=False, saw_open=False,
+                      open_seq_base=getattr(lock, "open_seq", 0))
 
 
 def log_event(event: str, code: str, detail: str = ""):
@@ -71,7 +77,10 @@ def verify_token(code: str, ts: int, token: str) -> None:
 async def do_unlock(code: str, ts: int, token: str) -> dict:
     verify_token(code, ts, token)
     was_locked = lock.is_locked
-    lock.unlock()
+    try:
+        lock.unlock()
+    except RuntimeError as e:          # BLE 模式下锁控板掉线
+        raise HTTPException(503, str(e))
     mark_unlocked(code)
     log_event("unlock", code, "first" if was_locked else "again")
     return {"status": "unlocked", "code": code, "feedback": lock.has_feedback}
@@ -216,7 +225,8 @@ async def poll_backend():
                     last_hb = now
                     await client.post(f"{base}/api/v1/pi/heartbeat", headers=headers, json={
                         "fridge_id": fridge_id, "is_locked": lock.is_locked,
-                        "mock": lock.mock, "version": VERSION})
+                        "mock": lock.mock, "version": VERSION,
+                        "extra": ({"lock_board": lock.status()} if LOCK_MODE == "ble" else {})})
             except Exception as e:
                 NET.update(online=False, last_err=str(e) or type(e).__name__)
                 print(f"[poll] 后端不可达: {NET['last_err']}")
@@ -258,15 +268,20 @@ def setup_button():
 
 
 async def watch_door():
-    """反馈线监控：开锁脉冲后必须先看到锁舌弹开（未锁），再看到压回（上锁），才算一次真实开合门。"""
+    """开锁后必须先看到锁舌弹开（未锁），再看到压回（上锁），才算一次真实开合门。
+
+    GPIO 模式看电平；BLE 模式看板子的 open_seq 计数——通知有延迟，只靠电平会漏掉弹开瞬间。
+    """
     while True:
         try:
             if lock.has_feedback and door_watch["unlocked_at"] and not door_watch["cycle_done"]:
-                if not lock.is_locked:
-                    if not door_watch["saw_open"]:
-                        door_watch["saw_open"] = True
-                        log_event("door_open", last_unlock.get("code", ""), "检测到锁舌弹开")
-                elif door_watch["saw_open"] and time.time() - door_watch["unlocked_at"] > 2:
+                opened = (lock.open_seq > door_watch["open_seq_base"]
+                          if hasattr(lock, "open_seq") else not lock.is_locked)
+                if opened and not door_watch["saw_open"]:
+                    door_watch["saw_open"] = True
+                    log_event("door_open", last_unlock.get("code", ""), "检测到锁舌弹开")
+                elif door_watch["saw_open"] and lock.is_locked \
+                        and time.time() - door_watch["unlocked_at"] > 2:
                     door_watch["cycle_done"] = True
                     log_event("door_cycle", last_unlock.get("code", ""), "检测到门开过又关回")
         except Exception as e:
@@ -283,11 +298,19 @@ async def lifespan(app: FastAPI):
     else:
         print("[poll] 未配置 backend.base_url，仅提供本地 API")
     door_task = asyncio.create_task(watch_door())
-    lock.lock()
-    setup_button()
+    ble_task = None
+    if LOCK_MODE == "ble":
+        lock.on_button = button_press          # 按钮在板子上，按下走和本地按键同一套流程
+        ble_task = asyncio.create_task(lock.run())
+        print("[ble] 锁控板通道已启动（lock.mode=ble，派不再直接控 GPIO）")
+    else:
+        lock.lock()
+        setup_button()
     yield
     if task:
         task.cancel()
+    if ble_task:
+        ble_task.cancel()
     door_task.cancel()
     await stop_preview()
 
@@ -303,6 +326,14 @@ def healthz():
 @app.get("/api/status")
 def status():
     return {"is_locked": lock.is_locked, "mock": lock.mock, "button": button is not None}
+
+
+@app.get("/api/lock_board_status")
+def lock_board_status():
+    """BLE 锁控板链路详情（超管调试/锁控板离线告警用）。"""
+    if LOCK_MODE != "ble":
+        return {"mode": LOCK_MODE}
+    return lock.status()
 
 
 @app.post("/api/unlock")

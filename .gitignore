@@ -18,3 +18,7 @@ miniprogram/project.private.config.json
 .*.png
 *.bak
 fridge-server-cloud.zip
+
+# ESP32 锁控板：真实密钥不入库，构建产物不入库
+esp32/src/secrets.h
+.pio/

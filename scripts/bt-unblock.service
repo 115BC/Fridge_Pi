@@ -1,0 +1,12 @@
+[Unit]
+Description=Unblock Bluetooth RF-Kill before BlueZ
+Before=bluetooth.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/local/sbin/bt-unblock.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -12,3 +12,5 @@ onnxruntime
 qrcode
 # 树莓派上控制 GPIO 需要（系统自带 python3-gpiozero 也可）：
 gpiozero
+# lock.mode=ble 时派作为 BLE 中心连 ESP32 锁控板（需要 BlueZ 已放行）：
+bleak
