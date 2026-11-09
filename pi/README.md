@@ -3,16 +3,19 @@
 树莓派（派 3B / 派 5 均实机跑过，Debian 13）运行 `app.py`，负责四件事：
 
 1. **电控锁控制**：校验一次性令牌后发脉冲开锁（待机断电），蓝/白干接点反馈锁舌状态，关门压回锁舌自动重新上锁；`/api/door_status` 提供一次真实开合门事件
-2. **摄像头**：rpicam-vid MJPEG 实时预览 + 抓帧解码标签二维码（取出/贴标确认时扫码；不做拍照分类）
+2. **摄像头**：USB(UVC) 走 OpenCV V4L2（MJPG 1280×720@15，预览与抓帧共用一个句柄），CSI 走 rpicam-vid/still；抓帧解码标签二维码（取出/贴标确认时扫码；不做拍照分类）
 3. **触控屏**：`/kiosk` 扫码登录 → 录入名称/分类 → 打印标签 → 贴标扫码/输 8 位编码确认 → 开锁；取出、满柜排队、匿名呼叫宿管
 4. **后端轮询**：每 `heartbeat_seconds`（默认 10s）上报一次心跳，并附本机局域网信息（`ip`/`hostname`/`nics`/`uptime_s`/`boot_id`）供超管后台「设备监控」查看与 SSH 定位；IP 变化或重启上线时在后端留痕（冰箱在内网，无需开放入站端口，解锁指令也是从小程序后端拉取）
 
 ## 摄像头与触控屏
 
-- 摄像头走 **CSI + libcamera**（`rpicam-still` 静拍 / `rpicam-vid` 预览，代码里自动探测，没有则 mock）：
+- 摄像头优先 **USB(UVC) + V4L2**（`cv2.VideoCapture`，MJPG 1280×720@15；预览流与静拍共用一个句柄，
+  新开设备先丢 4 帧等自动曝光/对焦稳定，`/api/preview/*` 与 `/api/capture` 都走它）；
+  没有 USB 摄像头时退回 **CSI + libcamera**（`rpicam-still` 静拍 / `rpicam-vid` 预览），都没有则 mock：
   - 现装官方 Camera Module v2（OV5647，**定焦，最近合焦约 25~30cm**，贴太近必糊——是硬件限制不是故障，指导用户保持 25~40cm）
   - 换 IMX708 类自动对焦模组（对焦 15cm~∞、1200 万像素）：`/boot/firmware/config.txt` 里把 overlay 改成 `dtoverlay=imx708` 后重启，`rpicam-hello --list-cameras` 能列出模式才算识别成功；静帧分辨率建议用 16:9（4608×2592 被裁成 4:3 会浪费像素）
-  - USB(UVC) 摄像头走 V4L2，`rpicam-*` 取不到图，需要另写 `cv2.VideoCapture(0, CAP_V4L2)` 取帧
+  - USB 摄像头用 `v4l2-ctl --list-formats-ext` 确认有 MJPG；3B 的 USB2 口上 YUYV 720p 只有 7.5fps，必须选 MJPG
+  - 打印机同理做了即插即用：`/dev/usb/lp0` 在每次打印时重新检测，开机后接打印机不用重启服务
 - 扫码解码：**zxing-cpp 优先**，依次跑原图 / 灰度 / 中心区 2x / Otsu 二值化 / 锐化五个变体，OpenCV `QRCodeDetector` 兜底（Debian 13 已无 `libzbar0`，OpenCV 5 也不带微信检测器）。派 3B 实测：命中约 0.23s，画面里完全没码跑完全部变体约 2.0s；合成退化图 32 例 20→25
 - 触控屏：官方 Touch Display 2（DSI2）或 HDMI 屏。**没有触摸屏时用鼠标 + HDMI 屏也能跑**，此时不必装 wvkbd 屏幕键盘
 - kiosk 自启写 `~/.config/labwc/autostart`（labwc 是 Wayland 合成器，Chromium 和 VNC 都挂在它上面，不能整个去掉）：

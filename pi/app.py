@@ -431,6 +431,7 @@ async def recognize(photo: Path, event: str):
 PREVIEW_PORT = 8002
 preview_proc = None
 preview_task: asyncio.Task | None = None
+preview_active = False       # USB 摄像头走 OpenCV 流时用
 preview_subscribers: set[asyncio.Queue] = set()
 
 
@@ -459,10 +460,30 @@ async def _preview_reader():
     preview_subscribers.clear()
 
 
+async def _usb_preview_reader():
+    """USB 摄像头：cv2 读帧（阻塞部分丢线程池），编码 JPEG 后广播。"""
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            frame = await loop.run_in_executor(None, camera.read_jpeg)
+            if frame is None:
+                await asyncio.sleep(0.05)
+                continue
+            for q in list(preview_subscribers):
+                if q.qsize() < 2:
+                    q.put_nowait(frame)
+    finally:
+        preview_subscribers.clear()
+
+
 async def stop_preview():
-    global preview_proc, preview_task
+    global preview_proc, preview_task, preview_active
     if preview_task:
         preview_task.cancel()
+        try:
+            await preview_task
+        except asyncio.CancelledError:
+            pass
         preview_task = None
     if preview_proc and preview_proc.poll() is None:
         preview_proc.terminate()
@@ -473,15 +494,26 @@ async def stop_preview():
         else:
             preview_proc.kill()
     preview_proc = None
+    if preview_active:
+        preview_active = False
+        await asyncio.get_running_loop().run_in_executor(None, camera.close_stream)
     preview_subscribers.clear()
 
 
 @app.post("/api/preview/start")
 async def preview_start():
-    """启动 rpicam-vid MJPEG 实时流（stdout 取流，供触控屏取景）。"""
-    global preview_proc, preview_task
-    if camera.mock or not camera.vid_bin:
+    """启动实时预览：USB 走 OpenCV MJPEG，CSI 走 rpicam-vid。"""
+    global preview_proc, preview_task, preview_active
+    if camera.mock:
         raise HTTPException(400, "无真实摄像头，不支持实时预览")
+    if camera.usb_index is not None:
+        if not preview_active:
+            loop = asyncio.get_running_loop()
+            if not await loop.run_in_executor(None, camera.open_stream):
+                raise HTTPException(500, "USB 摄像头打开失败")
+            preview_active = True
+            preview_task = asyncio.create_task(_usb_preview_reader())
+        return {"status": "live", "stream": "/api/preview/stream"}
     if preview_proc is None or preview_proc.poll() is not None:
         preview_proc = subprocess.Popen(
             [camera.vid_bin, "-t", "0", "-n", "--codec", "mjpeg",
@@ -505,15 +537,18 @@ async def preview_stop():
 @app.get("/api/preview/stream")
 async def preview_stream():
     """同源 HTTP MJPEG 流，避免网页 canvas 跨域污染。"""
-    if preview_proc is None or preview_proc.poll() is not None:
+    if not preview_active and (preview_proc is None or preview_proc.poll() is not None):
         raise HTTPException(404, "预览未启动")
     q: asyncio.Queue = asyncio.Queue(maxsize=3)
     preview_subscribers.add(q)
 
     async def gen():
         try:
-            while preview_proc and preview_proc.poll() is None:
-                frame = await q.get()
+            while preview_active or (preview_proc is not None and preview_proc.poll() is None):
+                try:
+                    frame = await asyncio.wait_for(q.get(), timeout=5)
+                except asyncio.TimeoutError:
+                    continue
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
         finally:
             preview_subscribers.discard(q)
@@ -562,7 +597,7 @@ async def print_label(req: PrintReq):
                               room=req.room, batch_no=req.batch_no,
                               keep_until=req.keep_until)
     log_event("print_label", req.code, out.name)
-    return {"status": "printed" if not printer.mock else "rendered_only", "file": out.name}
+    return {"status": "printed" if (printer.dev or printer.cups) else "rendered_only", "file": out.name}
 
 
 class ItemRecord(BaseModel):
@@ -746,7 +781,7 @@ async def register_item(req: RegisterItemReq):
                                       batch_no=str(d.get("batch_no") or ""),
                                       keep_until=d.get("keep_until", ""))
             log_event("print_label", d["code"], out.name)
-            d["print"] = "printed" if not printer.mock else "rendered_only"
+            d["print"] = "printed" if (printer.dev or printer.cups) else "rendered_only"
         except Exception as e:
             log_event("print_fail", d.get("code", ""), str(e))
             d["print"] = "failed"

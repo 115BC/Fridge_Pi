@@ -29,7 +29,7 @@ class LabelPrinter:
         self.cups = bool(printer_name) and shutil.which("lp") is not None
         self.mock = not (self.dev or self.cups)
         if self.mock:
-            print("[printer] 未找到 /dev/usb/lp0 或 CUPS，标签仅生成 PNG 模拟")
+            print("[printer] 启动时未找到 /dev/usb/lp0 或 CUPS（打印时会重新检测）")
 
     def print_label(self, code: str, name: str, owner_name: str = "", room: str = "",
                     batch_no: str = "", keep_until: str = "") -> Path:
@@ -37,6 +37,8 @@ class LabelPrinter:
         LABEL_DIR.mkdir(parents=True, exist_ok=True)
         out = LABEL_DIR / f"{code}_{int(time.time())}.png"
         label.save(out)
+        # 即插即用：开机后才接上的打印机不必重启服务
+        self.dev = TSPL_DEV if Path(TSPL_DEV).exists() else ""
         if self.dev:
             self._send_tspl(label)
             print(f"[printer] TSPL 已打印标签 {code}")
@@ -45,6 +47,8 @@ class LabelPrinter:
                             "-o", f"media=Custom.{self.w_mm}x{self.h_mm}mm", str(out)],
                            check=True, capture_output=True)
             print(f"[printer] CUPS 已打印标签 {code}")
+        else:
+            print(f"[printer] 未检测到打印机，仅生成 PNG {out.name}")
         return out
 
     def _fit_font(self, text: str, avail_px: int, size: int):
