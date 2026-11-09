@@ -14,6 +14,7 @@
     <view class="tab {{section==='queue'?'on':''}}" data-s="queue" bindtap="setSection">排队与呼叫</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='users'?'on':''}}" data-s="users" bindtap="setSection">账号管理</view>
     <view wx:if="{{isAdmin}}" class="tab {{section==='debug'?'on':''}}" data-s="debug" bindtap="setSection">系统调试</view>
+    <view wx:if="{{isAdmin}}" class="tab {{section==='devices'?'on':''}}" data-s="devices" bindtap="setSection">设备监控</view>
   </view>
 
   <view wx:if="{{section==='items' || section==='students' || section==='queue'}}" class="tabs">
@@ -230,6 +231,33 @@
             <view class="btn btn-ghost btn-sm act">改角色</view>
           </picker>
         </view>
+      </view>
+    </view>
+  </block>
+
+  <block wx:if="{{section==='devices'}}">
+    <view class="card">
+      <view class="card-title">冰箱节点 · 局域网地址</view>
+      <view wx:if="{{nodes.length===0}}" class="empty">暂无心跳，检查树莓派服务与 backend.base_url</view>
+      <view wx:for="{{nodes}}" wx:key="fridge_id" class="kv">
+        <view class="li-name">{{item.fridge_id}}
+          <text class="badge {{item.online?'badge-green':'badge-red'}}">{{item.online?'在线':'离线'}}</text>
+          <text wx:if="{{item.mock}}" class="badge badge-yellow">模拟</text>
+        </view>
+        <view class="li-name">IP {{item.ip || '未上报'}}
+          <text class="copy" data-ip="{{item.ip}}" bindtap="copyIp">复制</text>
+        </view>
+        <view class="muted">主机 {{item.hostname || '-'}} · 已运行 {{item.uptime_text}} · 心跳 {{item.ago_text}}</view>
+        <view wx:if="{{item.nic_text}}" class="muted">网卡 {{item.nic_text}}</view>
+        <view class="muted">版本 {{item.version || '-'}} · 最后心跳 {{item.last_seen}}</view>
+      </view>
+    </view>
+    <view class="card">
+      <view class="card-title">上线与 IP 变更（最近 30）</view>
+      <view wx:if="{{nodeEvents.length===0}}" class="empty">暂无</view>
+      <view wx:for="{{nodeEvents}}" wx:key="id" class="kv">
+        <view class="li-name">{{item.type==='pi_online'?'上线':'IP 变更'}} <text class="muted">{{item.actor}}</text></view>
+        <view class="muted">{{item.created_at}} · {{item.detail}}</view>
       </view>
     </view>
   </block>

@@ -5,7 +5,7 @@
 1. **电控锁控制**：校验一次性令牌后发脉冲开锁（待机断电），蓝/白干接点反馈锁舌状态，关门压回锁舌自动重新上锁；`/api/door_status` 提供一次真实开合门事件
 2. **摄像头**：rpicam-vid MJPEG 实时预览 + 抓帧解码标签二维码（取出/贴标确认时扫码；不做拍照分类）
 3. **触控屏**：`/kiosk` 扫码登录 → 录入名称/分类 → 打印标签 → 贴标扫码/输 8 位编码确认 → 开锁；取出、满柜排队、匿名呼叫宿管
-4. **后端轮询**：主动向小程序后端拉取解锁指令（冰箱在内网，无需开放入站端口）
+4. **后端轮询**：每 `heartbeat_seconds`（默认 10s）上报一次心跳，并附本机局域网信息（`ip`/`hostname`/`nics`/`uptime_s`/`boot_id`）供超管后台「设备监控」查看与 SSH 定位；IP 变化或重启上线时在后端留痕（冰箱在内网，无需开放入站端口，解锁指令也是从小程序后端拉取）
 
 ## 摄像头与触控屏
 
@@ -18,15 +18,22 @@
 - kiosk 自启写 `~/.config/labwc/autostart`（labwc 是 Wayland 合成器，Chromium 和 VNC 都挂在它上面，不能整个去掉）：
 
 ```bash
+for i in $(seq 1 60); do
+  curl -fsS --noproxy '*' -o /dev/null http://127.0.0.1:8000/healthz && break
+  sleep 2
+done
 chromium --ozone-platform=wayland --enable-wayland-ime --wayland-text-input-version=3 \
+  --disable-gpu --disable-gpu-rasterization \
   --user-data-dir=$HOME/kiosk-profile --noerrdialogs --disable-infobars --no-first-run \
   --disable-session-crashed-bubble --disable-features=Translate,TranslateUI \
   --password-store=basic --kiosk http://127.0.0.1:8000/kiosk &
 ```
 
-两个必踩坑：① 不加 `--password-store=basic` 会被 gnome-keyring「新建钥匙环密码」弹窗挡住页面；
+三个必踩坑：① 不加 `--password-store=basic` 会被 gnome-keyring「新建钥匙环密码」弹窗挡住页面；
 ② 命令行禁用翻译不够，还要写企业策略 `/etc/chromium/policies/managed/kiosk.json`
-（`TranslateEnabled:false` + `VideoCaptureAllowedUrls:["http://127.0.0.1:8000"]` 预授权摄像头，免弹权限框）。
+（`TranslateEnabled:false` + `VideoCaptureAllowedUrls:["http://127.0.0.1:8000"]` 预授权摄像头，免弹权限框）；
+③ 3B 的 vc4 只有 GLES2，Chromium 154 的 GPU/ANGLE 路径创建 ES3 上下文失败会只出白/黑底（页面本身正常、
+CDP 截图有完整 UI），必须 `--disable-gpu` 走软件合成；首帧要十几秒，故先等 `/healthz` 再拉起浏览器。
 自动登录由 `/etc/lightdm/lightdm.conf` 的 `autologin-user` + `autologin-session=rpd-labwc` 负责。
 
 ## 存入流程（两步）

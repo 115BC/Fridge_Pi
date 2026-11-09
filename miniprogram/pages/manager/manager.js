@@ -22,6 +22,12 @@ const ROLE_OPTIONS = ['student', 'manager', 'admin']
 const ROLE_LABEL = { student: '学生', manager: '宿管', admin: '超级管理员' }
 const STATUS_LABEL = { taken_out: '已取出登记', removed: '已清理' }
 
+const fmtDur = s => {
+  s = Math.max(0, s | 0)
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60)
+  return d ? `${d}天${h}小时` : (h ? `${h}小时${m}分` : `${m}分`)
+}
+
 Page({
   data: {
     role: '', user: null, filters: FILTERS, filter: '', q: '',
@@ -33,7 +39,8 @@ Page({
     users: [], uq: '', roleOptions: ROLE_OPTIONS,
     students: [], sq: '',
     storageDays: 0, fridgeState: {}, queueList: [], calls: [],
-    pi_nodes: [], unlock_commands: [], events: [], reminders: [], logs: []
+    pi_nodes: [], unlock_commands: [], events: [], reminders: [], logs: [],
+    nodes: [], nodeEvents: []
   },
   onShow() {
     if (!app.guard(['manager', 'admin'])) return
@@ -48,12 +55,13 @@ Page({
       : this.data.section === 'students' ? this.loadStudents()
       : this.data.section === 'logs' ? this.loadLogs()
       : this.data.section === 'queue' ? this.loadQueueAndCalls()
-      : this.data.section === 'users' ? this.loadUsers() : this.loadDebug()
+      : this.data.section === 'users' ? this.loadUsers()
+      : this.data.section === 'devices' ? this.loadNodes() : this.loadDebug()
     p.then(() => wx.stopPullDownRefresh())
   },
   setSection(e) {
     const s = e.currentTarget.dataset.s
-    if ((s === 'users' || s === 'debug') && !this.data.isAdmin)
+    if ((s === 'users' || s === 'debug' || s === 'devices') && !this.data.isAdmin)
       return wx.showToast({ title: '仅超级管理员可访问', icon: 'none' })
     this.setData({ section: s })
     if (s === 'students') this.loadStudents()
@@ -61,6 +69,7 @@ Page({
     if (s === 'queue') this.loadQueueAndCalls()
     if (s === 'users') this.loadUsers()
     if (s === 'debug') this.loadDebug()
+    if (s === 'devices') this.loadNodes()
     if (s === 'items') this.load()
   },
 
@@ -546,6 +555,24 @@ Page({
       api.get('/api/v1/debug/events?limit=80').then(d =>
         this.setData({ events: d.events, reminders: d.reminders })).catch(() => {})
     ])
+  },
+
+  // 设备监控（超管）：局域网 IP / 在线状态 / 上线与 IP 变更留痕
+  loadNodes() {
+    return api.get('/api/v1/admin/nodes').then(d => {
+      const nodes = (d.nodes || []).map(n => Object.assign(n, {
+        uptime_text: fmtDur(n.uptime_s),
+        ago_text: n.seconds_ago == null ? '-'
+          : (n.seconds_ago < 60 ? n.seconds_ago + '秒前' : Math.floor(n.seconds_ago / 60) + '分钟前'),
+        nic_text: (n.nics || []).map(x => x.name + ': ' + (x.addrs || []).join(', ')).join('；')
+      }))
+      this.setData({ nodes, nodeEvents: d.node_events || [] })
+    }).catch(() => {})
+  },
+  copyIp(e) {
+    const ip = e.currentTarget.dataset.ip
+    if (!ip) return wx.showToast({ title: '该节点尚未上报 IP', icon: 'none' })
+    wx.setClipboardData({ data: ip })
   },
 
   remindOne(e) {

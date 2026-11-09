@@ -10,3 +10,5 @@
 .act.danger { color: #ff4d4f; }
 .sec { font-size: 26rpx; color: #555; font-weight: 600; margin: 16rpx 0 8rpx; }
 .li { font-size: 26rpx; padding: 8rpx 0; color: #444; }
+
+.copy { color: #1677ff; font-size: 24rpx; font-weight: 400; margin-left: 12rpx; }

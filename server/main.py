@@ -53,6 +53,7 @@ MANAGER_BOOTSTRAP_OPENIDS = set(CFG["bootstrap"].get("manager_openids") or [])
 DEV_LOGIN = bool(CFG["wechat"].get("dev_login"))   # 仅内网调试：code 带 "dev:" 前缀时跳过微信验证
 AUTO = CFG["rules"].get("auto_remind", {})
 STOCK_KEEP_DAYS = CFG["rules"].get("stocktake_keep_days", 7)
+NODE_ONLINE_SECONDS = 60   # 心跳 10s 一次，超过 60s 没心跳判离线
 PI_LOCAL = (CFG["print"].get("pi_local_api") or "").rstrip("/")
 DEFAULT_CAPACITY_ML = int(CFG.get("fridge", {}).get("capacity_ml") or 150000)
 PHOTO_DIR = Path(CFG["paths"].get("photo_dir") or (db.DATA_DIR / "photos"))
@@ -940,6 +941,31 @@ def debug_pi(_: dict = Depends(admin_dep)):
     return {"pi_nodes": nodes, "unlock_commands": cmds}
 
 
+@app.get("/api/v1/admin/nodes")
+def admin_nodes(_: dict = Depends(admin_dep)):
+    """超管设备监控：各 Pi 的局域网 IP/主机名/网卡/运行时长、在线判定与上线/IP 变更留痕。"""
+    import json
+    now = datetime.now()
+    nodes = []
+    for r in rows("SELECT * FROM pi_nodes ORDER BY last_seen DESC"):
+        try:
+            seen = datetime.strptime(str(r["last_seen"])[:19], "%Y-%m-%d %H:%M:%S")
+            ago = max(0, int((now - seen).total_seconds()))
+        except (ValueError, TypeError):
+            ago = None
+        r["online"] = ago is not None and ago <= NODE_ONLINE_SECONDS
+        r["seconds_ago"] = ago
+        try:
+            r["nics"] = json.loads(r["nics"] or "[]")
+        except (ValueError, TypeError):
+            r["nics"] = []
+        nodes.append(r)
+    return {"nodes": nodes,
+            "node_events": rows("SELECT * FROM events WHERE type IN ('pi_online','pi_ip_change') "
+                                "ORDER BY id DESC LIMIT 30"),
+            "online_seconds": NODE_ONLINE_SECONDS}
+
+
 @app.get("/api/v1/debug/events")
 def debug_events(limit: int = 50, _: dict = Depends(admin_dep)):
     return {"events": rows("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)),
@@ -1652,19 +1678,34 @@ class Heartbeat(BaseModel):
     mock: bool = False
     version: str = ""
     extra: dict = {}
+    ip: str = ""
+    hostname: str = ""
+    uptime_s: int = 0
+    nics: list = []
+    boot_id: str = ""
 
 
 @app.post("/api/v1/pi/heartbeat")
 def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
     import json
+    old = db.conn().execute("SELECT ip, boot_id FROM pi_nodes WHERE fridge_id=?",
+                            (req.fridge_id,)).fetchone()
+    if old is None or (req.boot_id and old["boot_id"] != req.boot_id):
+        db.log_event("pi_online", req.fridge_id,
+                     f"ip={req.ip or '-'} host={req.hostname or '-'}")
+    elif req.ip and old["ip"] and old["ip"] != req.ip:
+        db.log_event("pi_ip_change", req.fridge_id, f"{old['ip']} -> {req.ip}")
     db.conn().execute(
-        "INSERT INTO pi_nodes(fridge_id,is_locked,mock,version,payload,last_seen) "
-        "VALUES(?,?,?,?,?,datetime('now','localtime')) "
+        "INSERT INTO pi_nodes(fridge_id,is_locked,mock,version,payload,last_seen,"
+        "ip,hostname,uptime_s,nics,boot_id) "
+        "VALUES(?,?,?,?,?,datetime('now','localtime'),?,?,?,?,?) "
         "ON CONFLICT(fridge_id) DO UPDATE SET is_locked=excluded.is_locked, "
         "mock=excluded.mock, version=excluded.version, payload=excluded.payload, "
-        "last_seen=excluded.last_seen",
+        "last_seen=excluded.last_seen, ip=excluded.ip, hostname=excluded.hostname, "
+        "uptime_s=excluded.uptime_s, nics=excluded.nics, boot_id=excluded.boot_id",
         (req.fridge_id, int(req.is_locked), int(req.mock), req.version,
-         json.dumps(req.extra, ensure_ascii=False)))
+         json.dumps(req.extra, ensure_ascii=False), req.ip, req.hostname,
+         req.uptime_s, json.dumps(req.nics, ensure_ascii=False), req.boot_id))
     return {"ok": True}
 
 

@@ -452,6 +452,31 @@ check("无主物品不能提醒 400", cln2.status_code == 400, str(cln2.status_c
 hb = c.get(B + "/api/v1/debug/pi", headers=H(mgr["token"])).json()["pi_nodes"]
 check("Pi 心跳上报", hb and hb[0]["fridge_id"] == "fridge-01", str(hb))
 
+# 6b. 设备监控：局域网 IP 上报 + 超管接口 + 上线/IP 变更留痕
+# 用独立 fridge_id，避免与真实 Pi 的 10s 心跳互相覆盖
+hb_body = {"fridge_id": "fridge-mon", "is_locked": True, "mock": True, "version": "test",
+           "ip": "10.0.0.9", "hostname": "pi-mon", "uptime_s": 123,
+           "nics": [{"name": "wlan0", "addrs": ["10.0.0.9"]}],
+           "boot_id": "boot-" + uuid.uuid4().hex[:8]}
+r = c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+check("心跳带设备信息受理", r.status_code == 200, str(r.status_code))
+nd = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+mon = [n for n in nd["nodes"] if n["fridge_id"] == "fridge-mon"]
+check("设备监控返回 IP/主机名/网卡",
+      mon and mon[0]["ip"] == "10.0.0.9" and mon[0]["hostname"] == "pi-mon"
+      and mon[0]["nics"][0]["name"] == "wlan0", str(mon))
+check("设备在线判定", mon and mon[0]["online"] is True and mon[0]["seconds_ago"] is not None, str(mon))
+check("上线事件留痕",
+      any(e["type"] == "pi_online" and e["actor"] == "fridge-mon" for e in nd["node_events"]), "")
+hb_body["ip"] = "10.0.0.10"
+c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+nd2 = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+check("IP 变更事件留痕",
+      any(e["type"] == "pi_ip_change" and "10.0.0.9 -> 10.0.0.10" in e["detail"]
+          for e in nd2["node_events"]), "")
+check("设备监控仅超管",
+      c.get(B + "/api/v1/admin/nodes", headers=H(mgr2["token"])).status_code == 403, "")
+
 n_fail = sum(1 for _, v in ok if not v)
 print(f"\n===== 回归结果: {len(ok)-n_fail}/{len(ok)} 通过 =====")
 raise SystemExit(1 if n_fail else 0)

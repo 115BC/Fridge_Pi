@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import socket
 import subprocess
 import time
 import uuid
@@ -187,6 +188,43 @@ async def sync_offline_items(client: httpx.AsyncClient, base: str, headers: dict
               f"created={len(d.get('created', []))} skipped={len(d.get('skipped', []))}")
 
 
+BOOT_ID = uuid.uuid4().hex   # 进程级标识：服务重启即变，后端据此记一次 pi_online
+
+
+def local_net_info() -> dict:
+    """心跳附带的局域网信息。主 IP 用 UDP connect 选路（不发包），网卡列表走 ip -j addr。"""
+    ip = ""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except OSError:
+        pass
+    finally:
+        s.close()
+    if not ip or ip.startswith("127."):
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            ip = ""
+    nics = []
+    try:
+        out = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=3)
+        for iface in json.loads(out.stdout or "[]"):
+            addrs = [a["local"] for a in iface.get("addr_info", [])
+                     if a.get("family") == "inet" and not a["local"].startswith("127.")]
+            if addrs:
+                nics.append({"name": iface.get("ifname", ""), "addrs": addrs})
+    except Exception:
+        nics = [{"name": "primary", "addrs": [ip]}] if ip else []
+    try:
+        uptime = int(float(Path("/proc/uptime").read_text().split()[0]))
+    except Exception:
+        uptime = int(time.monotonic())
+    return {"ip": ip, "hostname": socket.gethostname(), "nics": nics,
+            "uptime_s": uptime, "boot_id": BOOT_ID}
+
+
 async def poll_backend():
     """树莓派只主动向外请求（内网无需开放端口），从小程序后端拉取待执行的解锁指令并上报心跳。"""
     base = CFG["backend"]["base_url"].rstrip("/")
@@ -216,7 +254,7 @@ async def poll_backend():
                     last_hb = now
                     await client.post(f"{base}/api/v1/pi/heartbeat", headers=headers, json={
                         "fridge_id": fridge_id, "is_locked": lock.is_locked,
-                        "mock": lock.mock, "version": VERSION})
+                        "mock": lock.mock, "version": VERSION, **local_net_info()})
             except Exception as e:
                 NET.update(online=False, last_err=str(e) or type(e).__name__)
                 print(f"[poll] 后端不可达: {NET['last_err']}")
