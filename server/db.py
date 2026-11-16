@@ -348,7 +348,7 @@ def init():
                 pass
         for col, ddl in (("ip", "VARCHAR(45) DEFAULT ''"), ("hostname", "VARCHAR(64) DEFAULT ''"),
                          ("uptime_s", "INT DEFAULT 0"), ("nics", "TEXT"),
-                         ("boot_id", "VARCHAR(32) DEFAULT ''")):
+                         ("boot_id", "VARCHAR(32) DEFAULT ''"), ("power", "TEXT")):
             try:
                 c.execute(f"ALTER TABLE pi_nodes ADD COLUMN {col} {ddl}")
             except Exception:
@@ -386,7 +386,8 @@ def init():
                         "ALTER TABLE pi_nodes ADD COLUMN hostname TEXT DEFAULT ''",
                         "ALTER TABLE pi_nodes ADD COLUMN uptime_s INTEGER DEFAULT 0",
                         "ALTER TABLE pi_nodes ADD COLUMN nics TEXT",
-                        "ALTER TABLE pi_nodes ADD COLUMN boot_id TEXT DEFAULT ''"):
+                        "ALTER TABLE pi_nodes ADD COLUMN boot_id TEXT DEFAULT ''",
+                        "ALTER TABLE pi_nodes ADD COLUMN power TEXT"):
                 try:
                     c.execute(sql)
                 except sqlite3.OperationalError:

@@ -959,9 +959,15 @@ def admin_nodes(_: dict = Depends(admin_dep)):
             r["nics"] = json.loads(r["nics"] or "[]")
         except (ValueError, TypeError):
             r["nics"] = []
+        try:
+            r["power"] = json.loads(r["power"] or "{}")
+        except (ValueError, TypeError):
+            r["power"] = {}
+        r["power_flags"] = throttle_flags(r["power"].get("throttled", ""))
         nodes.append(r)
     return {"nodes": nodes,
-            "node_events": rows("SELECT * FROM events WHERE type IN ('pi_online','pi_ip_change') "
+            "node_events": rows("SELECT * FROM events WHERE type IN "
+                                "('pi_online','pi_ip_change','pi_undervolt','pi_power_ok') "
                                 "ORDER BY id DESC LIMIT 30"),
             "online_seconds": NODE_ONLINE_SECONDS}
 
@@ -1174,6 +1180,22 @@ def kiosk_confirm_store(code: str, _: None = Depends(_pi_auth)):
                  f"{row['code']} {row['name']} 编号{row['batch_no']} 扫码入库并开锁")
     return {"ok": True, "code": row["code"], "name": row["name"], "status": final,
             "batch_no": row["batch_no"], "keep_until": row["expire_at"]}
+
+
+@app.post("/api/v1/kiosk/items/{code}/cancel-store")
+def kiosk_cancel_store(code: str, _: None = Depends(_pi_auth)):
+    """触控屏 30 秒未扫到标签：即时作废本次待入库登记（门从未开过，物品没进箱）。
+    已入库/已作废的编码不动，返回当前状态。"""
+    row = db.conn().execute("SELECT * FROM items WHERE code=?",
+                            (code.strip().upper(),)).fetchone()
+    if not row:
+        raise HTTPException(404, "标签编码不存在")
+    if row["status"] != "awaiting_scan":
+        return {"ok": True, "already": True, "code": row["code"], "status": row["status"]}
+    db.conn().execute("UPDATE items SET status='cancelled' WHERE id=?", (row["id"],))
+    db.log_event("kiosk_cancel_store", "kiosk",
+                 f"{row['code']} {row['name']} 编号{row['batch_no']} 扫码超时作废")
+    return {"ok": True, "code": row["code"], "status": "cancelled"}
 
 
 class TakeoutDoneReq(BaseModel):
@@ -1683,29 +1705,58 @@ class Heartbeat(BaseModel):
     uptime_s: int = 0
     nics: list = []
     boot_id: str = ""
+    power: dict = {}
+
+
+# get_throttled 位含义（低 4 位=当前状态，bit16~19=自开机以来发生过）
+THROTTLE_BITS = ((0, "当前欠压"), (1, "当前限频"), (2, "当前节流"), (3, "当前软温限"),
+                 (16, "曾欠压"), (17, "曾限频"), (18, "曾节流"), (19, "曾软温限"))
+
+
+def throttle_flags(throttled: str) -> list:
+    try:
+        v = int(str(throttled), 16)
+    except (TypeError, ValueError):
+        return []
+    return [label for bit, label in THROTTLE_BITS if v & (1 << bit)]
 
 
 @app.post("/api/v1/pi/heartbeat")
 def heartbeat(req: Heartbeat, _: None = Depends(_pi_auth)):
     import json
-    old = db.conn().execute("SELECT ip, boot_id FROM pi_nodes WHERE fridge_id=?",
+    old = db.conn().execute("SELECT ip, boot_id, power FROM pi_nodes WHERE fridge_id=?",
                             (req.fridge_id,)).fetchone()
     if old is None or (req.boot_id and old["boot_id"] != req.boot_id):
         db.log_event("pi_online", req.fridge_id,
                      f"ip={req.ip or '-'} host={req.hostname or '-'}")
     elif req.ip and old["ip"] and old["ip"] != req.ip:
         db.log_event("pi_ip_change", req.fridge_id, f"{old['ip']} -> {req.ip}")
+    new_flags = throttle_flags(req.power.get("throttled", ""))
+    old_flags = []
+    if old is not None:
+        try:
+            old_flags = throttle_flags(json.loads(old["power"] or "{}").get("throttled", ""))
+        except (ValueError, TypeError):
+            pass
+    if "当前欠压" in new_flags and "当前欠压" not in old_flags:
+        db.log_event("pi_undervolt", req.fridge_id,
+                     f"输入 {req.power.get('v')}V throttled={req.power.get('throttled')}")
+    elif "当前欠压" in old_flags and "当前欠压" not in new_flags:
+        db.log_event("pi_power_ok", req.fridge_id,
+                     f"欠压恢复 throttled={req.power.get('throttled')}")
     db.conn().execute(
         "INSERT INTO pi_nodes(fridge_id,is_locked,mock,version,payload,last_seen,"
-        "ip,hostname,uptime_s,nics,boot_id) "
-        "VALUES(?,?,?,?,?,datetime('now','localtime'),?,?,?,?,?) "
+        "ip,hostname,uptime_s,nics,boot_id,power) "
+        "VALUES(?,?,?,?,?,datetime('now','localtime'),?,?,?,?,?,?) "
         "ON CONFLICT(fridge_id) DO UPDATE SET is_locked=excluded.is_locked, "
         "mock=excluded.mock, version=excluded.version, payload=excluded.payload, "
         "last_seen=excluded.last_seen, ip=excluded.ip, hostname=excluded.hostname, "
-        "uptime_s=excluded.uptime_s, nics=excluded.nics, boot_id=excluded.boot_id",
+        "uptime_s=excluded.uptime_s, nics=excluded.nics, boot_id=excluded.boot_id, "
+        "power=excluded.power",
         (req.fridge_id, int(req.is_locked), int(req.mock), req.version,
          json.dumps(req.extra, ensure_ascii=False), req.ip, req.hostname,
-         req.uptime_s, json.dumps(req.nics, ensure_ascii=False), req.boot_id))
+         req.uptime_s, json.dumps(req.nics, ensure_ascii=False), req.boot_id,
+         json.dumps(req.power, ensure_ascii=False)))
     return {"ok": True}
 
 

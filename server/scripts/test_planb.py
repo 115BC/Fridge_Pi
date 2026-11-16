@@ -44,6 +44,8 @@ _db.execute("UPDATE users SET role='manager' WHERE openid='dev_dev:mgrB'")
 # 复位小D：上一轮可能已绑楼/已建物品，否则"绑定必选楼宇"用例会因持久库状态而失真
 _db.execute("DELETE FROM items WHERE user_id IN (SELECT id FROM users WHERE openid='dev_dev:stuD')")
 _db.execute("DELETE FROM users WHERE openid='dev_dev:stuD'")
+# 复位小A：上一轮残留 active 物品可能已达额度上限，登记用例会被 400 拒掉
+_db.execute("DELETE FROM items WHERE user_id IN (SELECT id FROM users WHERE openid='dev_dev:stuA')")
 # 复位上锁/排队/呼叫与存放天数，保证本轮断言可重复
 _db.execute("DELETE FROM queue")
 _db.execute("DELETE FROM calls")
@@ -442,6 +444,22 @@ _db3.commit(); _db3.close()
 cf9 = c.post(B + f"/api/v1/kiosk/items/{r9['code']}/confirm-store", json={}, headers=PS)
 check("超5分钟确认被拒 400", cf9.status_code == 400, str(cf9.status_code))
 
+# 扫码超时即时取消（触控屏 30 秒未识别回首页并删除本次登记）
+r10 = c.post(B + "/api/v1/kiosk/items", json={"name": "取消苹果", "category": "水果",
+             "login_ticket": t3}, headers=PS).json()
+check("取消用例登记待入库", r10.get("status") == "awaiting_scan", str(r10)[:80])
+cx = c.post(B + f"/api/v1/kiosk/items/{r10['code']}/cancel-store", json={}, headers=PS).json()
+check("超时取消作废待入库", cx.get("ok") and cx.get("status") == "cancelled", str(cx))
+cf10 = c.post(B + f"/api/v1/kiosk/items/{r10['code']}/confirm-store", json={}, headers=PS)
+check("取消后确认被拒 400", cf10.status_code == 400, str(cf10.status_code))
+r10b = c.post(B + "/api/v1/kiosk/items", json={"name": "入库后取消", "category": "其他",
+              "login_ticket": t3}, headers=PS).json()
+c.post(B + f"/api/v1/kiosk/items/{r10b['code']}/confirm-store", json={}, headers=PS)
+cx2 = c.post(B + f"/api/v1/kiosk/items/{r10b['code']}/cancel-store", json={}, headers=PS).json()
+check("已入库不可取消(返回现状)", cx2.get("already") and cx2.get("status") == "active", str(cx2))
+check("取消接口需 Pi 鉴权 401", c.post(B + f"/api/v1/kiosk/items/{r10['code']}/cancel-store",
+      json={}).status_code == 401, "")
+
 # 清理后提醒学生 / 无主物品不能提醒
 cln = c.post(B + f"/api/v1/items/{item_b}/notify-cleaned", json={}, headers=H(mgr2["token"]))
 check("清理留痕后可提醒学生", cln.status_code == 200, str(cln.status_code))
@@ -476,6 +494,35 @@ check("IP 变更事件留痕",
           for e in nd2["node_events"]), "")
 check("设备监控仅超管",
       c.get(B + "/api/v1/admin/nodes", headers=H(mgr2["token"])).status_code == 403, "")
+
+# 6c. 供电监控：PMIC 电压/电流/功率上报 + throttled 解码 + 欠压/恢复留痕
+hb_body["power"] = {"v": 5.14, "a_est": 1.2, "w": 6.2, "throttled": "0x0"}
+c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+nd3 = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+mon3 = [n for n in nd3["nodes"] if n["fridge_id"] == "fridge-mon"][0]
+check("供电电压电流功率上报", mon3["power"]["v"] == 5.14 and mon3["power"]["w"] == 6.2,
+      str(mon3.get("power")))
+check("供电健康无告警旗标", mon3["power_flags"] == [], str(mon3["power_flags"]))
+hb_body["power"].update(throttled="0x1", v=4.6)
+c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+nd4 = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+mon4 = [n for n in nd4["nodes"] if n["fridge_id"] == "fridge-mon"][0]
+check("欠压旗标解码", "当前欠压" in mon4["power_flags"], str(mon4["power_flags"]))
+check("欠压事件留痕",
+      any(e["type"] == "pi_undervolt" and e["actor"] == "fridge-mon" for e in nd4["node_events"]), "")
+hb_body["power"].update(throttled="0x10000", v=5.1)
+c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+nd5 = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+mon5 = [n for n in nd5["nodes"] if n["fridge_id"] == "fridge-mon"][0]
+check("欠压恢复事件留痕",
+      any(e["type"] == "pi_power_ok" and e["actor"] == "fridge-mon" for e in nd5["node_events"]), "")
+check("历史欠压旗标保留", mon5["power_flags"] == ["曾欠压"], str(mon5["power_flags"]))
+hb_body.pop("power")
+c.post(B + "/api/v1/pi/heartbeat", json=hb_body, headers=PS)
+nd6 = c.get(B + "/api/v1/admin/nodes", headers=H(mgr["token"])).json()
+mon6 = [n for n in nd6["nodes"] if n["fridge_id"] == "fridge-mon"][0]
+check("旧版心跳无供电字段兼容", mon6["power"] == {} and mon6["power_flags"] == [],
+      str(mon6.get("power")))
 
 n_fail = sum(1 for _, v in ok if not v)
 print(f"\n===== 回归结果: {len(ok)-n_fail}/{len(ok)} 通过 =====")

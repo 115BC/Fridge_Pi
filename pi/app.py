@@ -27,7 +27,7 @@ CFG = yaml.safe_load((BASE_DIR / "config.yaml").read_text(encoding="utf-8"))
 EVENTS_FILE = BASE_DIR / "data" / "events.jsonl"
 ITEMS_FILE = BASE_DIR / "data" / "items.jsonl"
 OFFLINE_FILE = BASE_DIR / "data" / "offline_items.jsonl"
-VERSION = "1.5"
+VERSION = "1.6"
 
 lock = ElectromagneticLock(CFG["lock"]["gpio_pin"], mock=CFG["lock"]["mock"],
                            feedback_pin=CFG["lock"].get("feedback_gpio"),
@@ -225,6 +225,38 @@ def local_net_info() -> dict:
             "uptime_s": uptime, "boot_id": BOOT_ID}
 
 
+def local_power_info() -> dict:
+    """供电监控：Pi 5 的 PMIC 可读输入电压(EXT5V_V)与各路电流；其它机型只有 get_throttled。
+    PMIC 没有输入电流轨(EXT5V_A)，输入电流按 Σ(轨电压×轨电流)/输入电压 估算（不含转换损耗，偏小）。"""
+    info: dict = {"v": None, "a_est": None, "w": None, "throttled": ""}
+    try:
+        out = subprocess.run(["vcgencmd", "pmic_read_adc"],
+                             capture_output=True, text=True, timeout=3).stdout
+        rails = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or "=" not in parts[1]:
+                continue
+            try:
+                rails[parts[0]] = float(parts[1].split("=", 1)[1].rstrip("VA"))
+            except ValueError:
+                pass
+        v = rails.get("EXT5V_V")
+        if v:
+            w = sum(rails[k[:-2] + "_V"] * rails[k] for k in rails
+                    if k.endswith("_A") and k[:-2] + "_V" in rails)
+            info.update(v=round(v, 3), w=round(w, 2), a_est=round(w / v, 3))
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["vcgencmd", "get_throttled"],
+                             capture_output=True, text=True, timeout=3).stdout
+        info["throttled"] = out.strip().split("=")[-1]
+    except Exception:
+        pass
+    return info
+
+
 async def poll_backend():
     """树莓派只主动向外请求（内网无需开放端口），从小程序后端拉取待执行的解锁指令并上报心跳。"""
     base = CFG["backend"]["base_url"].rstrip("/")
@@ -254,7 +286,8 @@ async def poll_backend():
                     last_hb = now
                     await client.post(f"{base}/api/v1/pi/heartbeat", headers=headers, json={
                         "fridge_id": fridge_id, "is_locked": lock.is_locked,
-                        "mock": lock.mock, "version": VERSION, **local_net_info()})
+                        "mock": lock.mock, "version": VERSION,
+                        "power": local_power_info(), **local_net_info()})
             except Exception as e:
                 NET.update(online=False, last_err=str(e) or type(e).__name__)
                 print(f"[poll] 后端不可达: {NET['last_err']}")
@@ -840,6 +873,37 @@ async def confirm_store(req: ConfirmStoreReq):
     AWAITING.pop(code, None)
     log_event("confirm_store", code, f"{d.get('name', '')} 扫码入库")
     return d
+
+
+class CancelStoreReq(BaseModel):
+    code: str
+
+
+@app.post("/api/cancel_store")
+async def cancel_store(req: CancelStoreReq):
+    """触控屏 30 秒未识别到标签 / 手动返回：作废本次在线待入库登记。
+    离线登记不取消（记录留在本机，仍可扫码确认）；仅 awaiting_scan 可作废。"""
+    code = req.code.strip().upper()
+    if not code:
+        raise HTTPException(400, "缺少标签编码")
+    base = CFG["backend"]["base_url"].rstrip("/")
+    if not base:
+        raise HTTPException(503, "未配置后端，无法取消登记")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.post(f"{base}/api/v1/kiosk/items/{code}/cancel-store",
+                                  json={}, headers={"X-Pi-Secret": CFG["security"]["secret"]})
+    except httpx.HTTPError:
+        raise HTTPException(503, "网络中断：取消登记未完成，云端将在 5 分钟后自动作废")
+    if r.status_code != 200:
+        try:
+            detail = r.json().get("detail") or f"HTTP {r.status_code}"
+        except Exception:
+            detail = f"HTTP {r.status_code}"
+        raise HTTPException(r.status_code if r.status_code < 500 else 502, detail)
+    AWAITING.pop(code, None)
+    log_event("cancel_store", code, "扫码超时，作废待入库登记")
+    return r.json()
 
 
 class TakeoutConfirmReq(BaseModel):

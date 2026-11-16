@@ -29,10 +29,8 @@
   .codes { color: #555; font-size: 14px; margin-top: 6px; }
   .guess { font-size: 16px; margin: 10px 0; }
   .guess b { color: #1677ff; }
-  #name, #takeCode, #csInput, #qName { width: 100%; font-size: 20px; padding: 12px;
+  #name, #qName { width: 100%; font-size: 20px; padding: 12px;
                border: 1px solid #ddd; border-radius: 10px; margin-bottom: 10px; }
-  #takeCode, #csInput { font-family: "Consolas", monospace; letter-spacing: 4px;
-               text-transform: uppercase; }
   .cats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
   .cats button { background: #eef1f5; color: #333; font-size: 16px; padding: 12px 4px; }
   .cats button.sel { background: #1677ff; color: #fff; }
@@ -62,13 +60,9 @@
   #netBadge { display: none; border-radius: 10px; padding: 12px 14px; font-size: 16px;
               margin-bottom: 12px; text-align: center; }
 
-  /* 8 位编码的大字显示与全字符键盘 */
+  /* 8 位编码大字展示（仅展示，识别全靠摄像头） */
   .codedisplay { font-family: "Consolas", monospace; font-size: 38px; font-weight: 700;
                  letter-spacing: 8px; text-align: center; margin: 10px 0; color: #101820; }
-  .keypad { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 10px 0; }
-  .keypad .kp { background: #eef1f5; color: #222; font-size: 20px; font-weight: 600;
-                padding: 10px 0; border-radius: 8px; }
-  .keypad .kp.wide { grid-column: span 3; font-size: 16px; }
   .calls button { width: 100%; margin-top: 10px; text-align: left; padding: 20px; }
   .calls button small { display: block; font-size: 14px; opacity: .85;
                         margin-top: 4px; font-weight: 400; }
@@ -93,7 +87,7 @@
     <button class="green" onclick="enterTake()">取出物品</button>
   </div>
   <button class="callbtn" onclick="enterCall()">呼叫宿管</button>
-  <div class="sub">存入：扫码登录 → 登记 → 打印标签 → 扫标签二维码/输编号开锁；取出：扫标签码 / 登录后点我的物品</div>
+  <div class="sub">存入：扫码登录 → 登记 → 打印标签 → 扫标签二维码自动入库；取出：标签对准摄像头自动开锁 / 登录后点我的物品</div>
   <div id="dayline"></div>
 </div>
 
@@ -130,7 +124,7 @@
   <div class="msg" id="storeMsg"></div>
 </div>
 
-<!-- 存入屏：第 2 步 扫标签 / 输 8 位编码 → 开锁 -->
+<!-- 存入屏：第 2 步 标签对准摄像头自动识别 → 入库开锁（30 秒未识别取消登记） -->
 <div id="scr-confirm_store" class="hidden">
   <div class="topbar">
     <button class="grey" onclick="abortConfirmStore()">← 返回</button>
@@ -141,12 +135,8 @@
     <div class="guess" style="margin-top:0">标签已打印：<b id="csName"></b></div>
     <div class="codedisplay" id="csCode">--------</div>
     <div class="muted" id="csMeta" style="text-align:center"></div>
-    <div class="muted" style="margin-top:10px">请把标签贴在物品上，然后将二维码对准摄像头扫码，或点下方键盘输入标签上的 8 位编码。</div>
+    <div class="muted" style="margin-top:10px">请把标签贴在物品上，将二维码对准摄像头自动识别（距离 25~40cm，避免反光）。<span id="csTimeoutHint">30 秒未识别将取消本次登记并返回首页。</span></div>
     <img id="live3" alt="实时取景">
-    <div class="keypad" id="csPad"></div>
-    <input id="csInput" placeholder="8 位标签编码" maxlength="12">
-    <button id="csScanBtn" class="big grey">对准摄像头扫标签二维码</button>
-    <button id="csOkBtn" class="big green" style="margin-top:10px">确认入库并开锁</button>
     <button class="previewToggle big grey" style="margin-top:8px">关闭实时预览</button>
   </div>
   <div class="msg" id="csMsg"></div>
@@ -204,11 +194,8 @@
     <div id="myList"></div>
   </div>
   <div class="card">
+    <div class="guess" style="margin-top:0">将标签二维码对准摄像头自动识别开锁（距离 25~40cm，避免反光）</div>
     <img id="live2" alt="实时取景">
-    <div class="keypad" id="takePad"></div>
-    <input id="takeCode" placeholder="输入标签上的 8 位编码" maxlength="12">
-    <button id="scanBtn" class="big grey">对准摄像头扫标签二维码</button>
-    <button id="takeBtn" class="big green" style="margin-top:10px">开锁取出</button>
     <button class="previewToggle big grey" style="margin-top:8px">关闭实时预览</button>
   </div>
   <div class="msg" id="takeMsg"></div>
@@ -243,6 +230,7 @@ function show(name) {
   ["standby", "home", "login", "store", "confirm_store", "queue", "call", "take", "confirm"]
     .forEach(s => document.getElementById("scr-" + s).classList.toggle("hidden", s !== name));
   if (name !== "login") stopLoginPoll();
+  if (name !== "confirm_store" && name !== "take") stopAutoScan();
   // 只在需要取景的两屏保留摄像头
   if (name !== "confirm_store" && name !== "take" && name !== "confirm" && liveOn) stopPreview();
   if (name === "home") refreshHomeState();
@@ -485,7 +473,7 @@ document.getElementById("saveBtn").onclick = async () => {
   saveBusy = false;
 };
 
-/* ---------- 存入第 2 步：贴标后扫码 / 输码 → 入库并开锁 ---------- */
+/* ---------- 存入第 2 步：标签对准摄像头自动识别 → 入库并开锁 ---------- */
 let csBusy = false, csItem = null;
 function openConfirmStore(d) {
   csItem = d;
@@ -494,26 +482,30 @@ function openConfirmStore(d) {
   document.getElementById("csName").textContent = d.name || "";
   document.getElementById("csMeta").textContent =
     `编号 ${d.batch_no || "-"} · 存放至 ${d.keep_until || "-"}`;
-  document.getElementById("csInput").value = "";
   const warn = d.print === "failed" ? "标签打印失败，请把编号抄下来贴到物品上；" : "";
-  setMsg("csMsg", warn + "请把标签贴好，扫码或输入编码后确认入库", true);
+  document.getElementById("csTimeoutHint").textContent = d.offline
+    ? "30 秒未识别返回首页（离线登记保留，不会取消）。"
+    : "30 秒未识别将取消本次登记并返回首页。";
+  setMsg("csMsg", warn + "请把标签贴好，二维码对准摄像头自动入库", true);
   startPreview();
+  autoScan("store");
 }
 function abortConfirmStore() {
-  if (csItem) logAbort();
+  cancelPendingStore();
+  goStandby();
+}
+function cancelPendingStore() {
+  // 超时或手动返回：在线登记即时作废（不等 5 分钟兜底）；离线登记保留在本机，不取消
+  const item = csItem;
   csItem = null;
-  goHome();
+  stopAutoScan();
+  if (item && item.code && !item.offline) post("/api/cancel_store", { code: item.code }).catch(() => {});
 }
-function logAbort() {
-  // 未扫码确认的登记会在 5 分钟后由后端自动作废，这里只清屏
-}
-async function confirmStoreRun() {
-  if (csBusy || !csItem) return;
-  const code = document.getElementById("csInput").value.trim().toUpperCase();
-  if (code.length < 4) return setMsg("csMsg", "请扫描或输入标签上的 8 位编码", false);
+async function confirmStoreWith(code) {
+  if (csBusy || !csItem) return false;
   csBusy = true;
   const sentAt = Date.now() / 1000;
-  setMsg("csMsg", "正在确认入库并开锁…", true);
+  setMsg("csMsg", "已识别标签 " + code + "，正在确认入库并开锁…", true);
   try {
     const d = await post("/api/confirm_store", { code });
     if (d.offline) {
@@ -527,59 +519,76 @@ async function confirmStoreRun() {
     offlineMode = false;
     csItem = null;
     setTimeout(() => { if (scr === "confirm_store") goHome(); }, 10000);
+    csBusy = false;
+    return true;
   } catch (e) {
     setMsg("csMsg", "确认失败：" + e.message, false);
+    csBusy = false;
+    return false;
   }
-  csBusy = false;
 }
-document.getElementById("csOkBtn").onclick = confirmStoreRun;
-document.getElementById("csScanBtn").onclick = async () => {
-  const code = await scanLabelTo("csInput", "csMsg");
-  if (code) confirmStoreRun();
-};
 
-/* ---------- 8 位编码：全字符键盘 + 扫标签二维码 ---------- */
-function buildKeypad(boxId, inputId) {
-  const box = document.getElementById(boxId);
-  box.innerHTML = "";
-  ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").split("").forEach(ch => {
-    const b = document.createElement("button");
-    b.className = "kp"; b.textContent = ch;
-    b.onclick = () => keyTap(inputId, ch);
-    box.appendChild(b);
-  });
-  [["⌫ 删除", "del"], ["清空", "clear"]].forEach(([label, act]) => {
-    const b = document.createElement("button");
-    b.className = "kp wide"; b.textContent = label;
-    b.onclick = () => keyTap(inputId, act);
-    box.appendChild(b);
-  });
+/* ---------- 持续识别：进入扫码屏即自动抓帧，30 秒未识别回首页 ---------- */
+const SCAN_TIMEOUT_MS = 30000;
+let scanCtl = null;
+function stopAutoScan() {
+  if (scanCtl) { scanCtl.stop = true; scanCtl = null; }
 }
-function keyTap(inputId, ch) {
-  const el = document.getElementById(inputId);
-  if (ch === "del") el.value = el.value.slice(0, -1);
-  else if (ch === "clear") el.value = "";
-  else if (el.value.length < 12) el.value += ch;
-  poke();
+async function autoScan(kind) {
+  stopAutoScan();
+  const ctl = { stop: false, acting: false, holdUntil: 0 };
+  scanCtl = ctl;
+  const msgId = kind === "store" ? "csMsg" : "takeMsg";
+  const deadline = Date.now() + SCAN_TIMEOUT_MS;
+  const hint = kind === "store"
+    ? "标签二维码对准摄像头自动入库"
+    : "标签二维码对准摄像头自动开锁";
+  const ticker = setInterval(() => {
+    if (ctl.stop) { clearInterval(ticker); return; }
+    if (ctl.acting || Date.now() < ctl.holdUntil) return;
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    setMsg(msgId, `${hint} · ${left} 秒后未识别将返回首页`, true);
+  }, 500);
+  let done = false;
+  while (!ctl.stop) {
+    if (!ctl.acting && Date.now() >= deadline) break;
+    let res = null;
+    try { res = await grabFrame(); } catch (e) {}
+    if (ctl.stop) break;
+    if (res && res.qr_codes && res.qr_codes.length) {
+      const code = res.qr_codes[0].trim().toUpperCase();
+      ctl.acting = true;
+      let ok = false;
+      try {
+        ok = kind === "store" ? await confirmStoreWith(code) : await takeWithCode(code);
+      } catch (e) {}
+      ctl.acting = false;
+      if (ok) { done = true; break; }
+      if (ctl.stop) break;
+      ctl.holdUntil = Date.now() + 2000;   // 失败信息停留一下再继续识别
+      await new Promise(r => setTimeout(r, 1500));
+      continue;
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  clearInterval(ticker);
+  if (scanCtl === ctl) scanCtl = null;
+  if (ctl.stop || done) return;
+  // 30 秒未识别：入库删除本次登记并登出回首页；取出直接回首页
+  if (kind === "store") { cancelPendingStore(); goStandby(); }
+  else goHome();
 }
-buildKeypad("csPad", "csInput");
-buildKeypad("takePad", "takeCode");
-["csInput", "takeCode"].forEach(id => {
-  const el = document.getElementById(id);
-  el.addEventListener("input", () => {
-    el.value = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
-  });
-});
 
 async function grabFrame() {
   // 优先从实时视频抓当前帧（摄像头已被流占用时不能再静拍）
+  const el = scr === "take" ? live2 : live;
   if (liveOn) {
-    for (let i = 0; i < 12 && live.naturalWidth === 0; i++)
+    for (let i = 0; i < 12 && el.naturalWidth === 0; i++)
       await new Promise(r => setTimeout(r, 150));
-    if (live.naturalWidth > 0) {
+    if (el.naturalWidth > 0) {
       const canvas = document.createElement("canvas");
-      canvas.width = live.naturalWidth; canvas.height = live.naturalHeight;
-      canvas.getContext("2d").drawImage(live, 0, 0);
+      canvas.width = el.naturalWidth; canvas.height = el.naturalHeight;
+      canvas.getContext("2d").drawImage(el, 0, 0);
       const blob = await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.92));
       const fd = new FormData();
       fd.append("file", blob, "frame.jpg");
@@ -589,29 +598,6 @@ async function grabFrame() {
     }
   }
   return await post("/api/capture");
-}
-
-async function scanLabelTo(inputId, msgId) {
-  // 定焦摄像头单帧很容易糊掉，这里连拍几帧再放弃（期间切页会自动停）
-  const hint = "请将标签二维码对准摄像头（距离 25~40cm，避免反光）";
-  for (let i = 0; i < 6; i++) {
-    setMsg(msgId, hint + "，正在识别（第 " + (i + 1) + "/6 次）…", true);
-    let res;
-    try {
-      res = await grabFrame();
-    } catch (e) { setMsg(msgId, "扫码失败：" + e.message, false); return ""; }
-    if (res.qr_codes && res.qr_codes.length) {
-      const code = res.qr_codes[0].trim().toUpperCase();
-      document.getElementById(inputId).value = code;
-      setMsg(msgId, "已识别标签 " + code, true);
-      return code;
-    }
-    const box = document.getElementById(inputId);
-    if (!box || !box.offsetParent) return "";      // 页面已切走
-    await new Promise(r => setTimeout(r, 400));
-  }
-  setMsg(msgId, "未识别到二维码，请手动输入编码", false);
-  return "";
 }
 
 /* ---------- 开锁等待（登记/取出共用） ---------- */
@@ -712,8 +698,8 @@ async function callManager(kind) {
 let takeBusy = { v: false };
 async function enterTake() {
   show("take");
-  document.getElementById("takeCode").value = "";
-  startPreview();   // 实时取景方便对准标签扫码
+  startPreview();   // 实时取景 + 持续识别，无需按键
+  autoScan("take");
   renderMyItems();
   await refreshNet();
   await refreshHomeState();
@@ -746,23 +732,14 @@ async function renderMyItems() {
   } catch (e) {}
 }
 
-document.getElementById("scanBtn").onclick = async () => {
-  const code = await scanLabelTo("takeCode", "takeMsg");
-  if (!code || takeBusy.v) return;
+async function takeWithCode(code) {
+  if (takeBusy.v) return false;
+  takeBusy.v = true;
   setMsg("takeMsg", "已识别标签 " + code + "，正在开锁…", true);
-  takeBusy.v = true;
   const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
-  if (r.done) showConfirm(code, r.name);
-};
-
-document.getElementById("takeBtn").onclick = async () => {
-  if (takeBusy.v) return;
-  const code = document.getElementById("takeCode").value.trim().toUpperCase();
-  if (!code) return setMsg("takeMsg", "请输入或扫描标签编码", false);
-  takeBusy.v = true;
-  const r = await unlockByCode(code, "takeMsg", "已开锁，请取出物品并随手关严箱门", takeBusy);
-  if (r.done) showConfirm(code, r.name);
-};
+  if (r.done) { showConfirm(code, r.name); return true; }
+  return false;
+}
 
 /* ---------- 取出结果确认页：有反馈线按真实开合门判定；无反馈线退回 60 秒倒计时 ---------- */
 let confirmTimer = null, confirmLeft = 0, confirmCode = "", cfmPoll = null, cfmWaited = 0;

@@ -557,15 +557,27 @@ Page({
     ])
   },
 
-  // 设备监控（超管）：局域网 IP / 在线状态 / 上线与 IP 变更留痕
+  // 设备监控（超管）：局域网 IP / 在线状态 / 供电电压电流 / 上线与 IP 变更留痕
   loadNodes() {
     return api.get('/api/v1/admin/nodes').then(d => {
-      const nodes = (d.nodes || []).map(n => Object.assign(n, {
-        uptime_text: fmtDur(n.uptime_s),
-        ago_text: n.seconds_ago == null ? '-'
-          : (n.seconds_ago < 60 ? n.seconds_ago + '秒前' : Math.floor(n.seconds_ago / 60) + '分钟前'),
-        nic_text: (n.nics || []).map(x => x.name + ': ' + (x.addrs || []).join(', ')).join('；')
-      }))
+      const nodes = (d.nodes || []).map(n => {
+        const p = n.power || {}
+        const flags = n.power_flags || []
+        const now = flags.filter(f => f.indexOf('当前') === 0)
+        const past = flags.filter(f => f.indexOf('当前') !== 0)
+        return Object.assign(n, {
+          uptime_text: fmtDur(n.uptime_s),
+          ago_text: n.seconds_ago == null ? '-'
+            : (n.seconds_ago < 60 ? n.seconds_ago + '秒前' : Math.floor(n.seconds_ago / 60) + '分钟前'),
+          nic_text: (n.nics || []).map(x => x.name + ': ' + (x.addrs || []).join(', ')).join('；'),
+          power_text: p.v != null
+            ? p.v.toFixed(2) + 'V · ' + (p.a_est != null ? p.a_est.toFixed(2) + 'A(估)' : '-')
+              + ' · ' + (p.w != null ? p.w.toFixed(1) + 'W' : '-')
+            : '未上报电压电流（仅 Pi 5 支持）',
+          power_badge: now.join('·'),
+          power_past: past.join('·')
+        })
+      })
       this.setData({ nodes, nodeEvents: d.node_events || [] })
     }).catch(() => {})
   },

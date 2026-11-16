@@ -243,20 +243,22 @@
         <view class="li-name">{{item.fridge_id}}
           <text class="badge {{item.online?'badge-green':'badge-red'}}">{{item.online?'在线':'离线'}}</text>
           <text wx:if="{{item.mock}}" class="badge badge-yellow">模拟</text>
+          <text wx:if="{{item.power_badge}}" class="badge badge-red">{{item.power_badge}}</text>
         </view>
         <view class="li-name">IP {{item.ip || '未上报'}}
           <text class="copy" data-ip="{{item.ip}}" bindtap="copyIp">复制</text>
         </view>
         <view class="muted">主机 {{item.hostname || '-'}} · 已运行 {{item.uptime_text}} · 心跳 {{item.ago_text}}</view>
         <view wx:if="{{item.nic_text}}" class="muted">网卡 {{item.nic_text}}</view>
+        <view class="muted">供电 {{item.power_text}}<text wx:if="{{item.power_past}}"> · {{item.power_past}}</text></view>
         <view class="muted">版本 {{item.version || '-'}} · 最后心跳 {{item.last_seen}}</view>
       </view>
     </view>
     <view class="card">
-      <view class="card-title">上线与 IP 变更（最近 30）</view>
+      <view class="card-title">上线 / IP 变更 / 供电事件（最近 30）</view>
       <view wx:if="{{nodeEvents.length===0}}" class="empty">暂无</view>
       <view wx:for="{{nodeEvents}}" wx:key="id" class="kv">
-        <view class="li-name">{{item.type==='pi_online'?'上线':'IP 变更'}} <text class="muted">{{item.actor}}</text></view>
+        <view class="li-name">{{item.type==='pi_online'?'上线':item.type==='pi_ip_change'?'IP 变更':item.type==='pi_undervolt'?'欠压':'供电恢复'}} <text class="muted">{{item.actor}}</text></view>
         <view class="muted">{{item.created_at}} · {{item.detail}}</view>
       </view>
     </view>
