@@ -110,6 +110,15 @@ def bootstrap_web_account():
     c = db.conn()
     row = _find_bootstrap_user(c, openid, username)
     if not row:
+        if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            # 全新部署空库：直接创建首个超管，网站独立运行不依赖小程序登录
+            c.execute("INSERT INTO users(openid,name,role,web_username,password_hash,"
+                      "must_change_password) VALUES(?,?,?,?,?,1)",
+                      (openid or f"web-{username}", username, "admin", username,
+                       hash_password(password)))
+            db.log_event("web_account_bootstrap", "system", f"空库自举超管 {username}")
+            print(f"[bootstrap] 空库已创建超管网站账号 {username}，首次登录须改密")
+            return
         print("[bootstrap] 未找到对应用户（可用 WEB_BOOTSTRAP_OPENID 指定），跳过网站账号自举")
         return
     if row["web_username"]:

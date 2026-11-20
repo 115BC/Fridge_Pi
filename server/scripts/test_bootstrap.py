@@ -77,6 +77,21 @@ for uid_, role_ in saved:
 c.execute("UPDATE users SET web_username='', password_hash='' WHERE openid=?",
           ("dev_bootstrap_user",))
 
+# 3c. 全新空库：自举直接创建首个超管（独立部署不依赖小程序登录）
+_saved_path = db.DB_PATH
+db.DB_PATH = Path(tempfile.mkdtemp(prefix="fridge_empty_")) / "fridge.db"
+db.init()
+os.environ.pop("WEB_BOOTSTRAP_OPENID", None)
+os.environ["WEB_BOOTSTRAP_USERNAME"] = "202411081071"
+os.environ["WEB_BOOTSTRAP_PASSWORD"] = "Fresh@1234"
+main.bootstrap_web_account()
+erow = db.conn().execute("SELECT * FROM users WHERE web_username='202411081071'").fetchone()
+check("空库自举创建超管", erow is not None and erow["role"] == "admin", "")
+check("空库自举强制改密", erow is not None and erow["must_change_password"] == 1, "")
+check("空库自举密码可校验",
+      erow is not None and main.verify_password("Fresh@1234", erow["password_hash"]), "")
+db.DB_PATH = _saved_path
+
 # 4. 无环境变量 -> 什么都不做
 for k in ("WEB_BOOTSTRAP_USERNAME", "WEB_BOOTSTRAP_PASSWORD", "WEB_BOOTSTRAP_OPENID"):
     os.environ.pop(k, None)

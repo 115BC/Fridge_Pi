@@ -39,8 +39,11 @@ from pathlib import Path
 _db = sqlite3.connect(Path(__file__).resolve().parent.parent / "data" / "fridge.db")
 # 开发登录 openid 形态为 "dev_" + 登录码（如 dev_dev:mgrA），旧写法 dev_mgrA 已不生效
 _db.execute("UPDATE users SET role='admin' WHERE openid IN ('dev_dev:mgrA','dev_mgrA')")
-_db.execute("INSERT OR IGNORE INTO users(openid,name,room,role) VALUES('dev_dev:mgrB','李宿管','值班室2','manager')")
+_db.execute("INSERT OR IGNORE INTO buildings(name,fridge_id) VALUES('东楼','fridge-02')")
+_db.execute("INSERT OR IGNORE INTO users(openid,name,room,role,building) VALUES('dev_dev:mgrB','李宿管','值班室2','manager','东楼')")
 _db.execute("UPDATE users SET role='manager' WHERE openid='dev_dev:mgrB'")
+# 李宿管固定归属东楼：全新库首登会绑主楼，分楼/跨楼用例须自包含，不依赖历史库状态
+_db.execute("UPDATE users SET building='东楼' WHERE openid='dev_dev:mgrB'")
 # 复位小D：上一轮可能已绑楼/已建物品，否则"绑定必选楼宇"用例会因持久库状态而失真
 _db.execute("DELETE FROM items WHERE user_id IN (SELECT id FROM users WHERE openid='dev_dev:stuD')")
 _db.execute("DELETE FROM users WHERE openid='dev_dev:stuD'")
