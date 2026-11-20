@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS users(
   room TEXT DEFAULT '',
   phone TEXT DEFAULT '',
   role TEXT NOT NULL DEFAULT 'student',   -- student | manager | admin
+  web_username TEXT UNIQUE,               -- 网站登录名（NULL=未开通）
+  password_hash TEXT DEFAULT '',          -- pbkdf2$salt$hash
+  must_change_password INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS items(
@@ -115,6 +118,9 @@ CREATE TABLE IF NOT EXISTS users(
   room VARCHAR(64) DEFAULT '',
   phone VARCHAR(32) DEFAULT '',
   role VARCHAR(16) NOT NULL DEFAULT 'student',
+  web_username VARCHAR(64) UNIQUE,
+  password_hash VARCHAR(255) DEFAULT '',
+  must_change_password TINYINT DEFAULT 0,
   quota INT NOT NULL DEFAULT 5,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -341,6 +347,13 @@ def init():
             c.execute("ALTER TABLE unlock_commands ADD COLUMN actor VARCHAR(64) DEFAULT ''")
         except Exception:
             pass
+        for col, ddl in (("web_username", "VARCHAR(64) UNIQUE"),
+                         ("password_hash", "VARCHAR(255) DEFAULT ''"),
+                         ("must_change_password", "TINYINT DEFAULT 0")):
+            try:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass
         for col, ddl in (("stored_at", "VARCHAR(16)"), ("batch_no", "INT")):
             try:
                 c.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
@@ -376,7 +389,10 @@ def init():
                 c.execute("ALTER TABLE unlock_commands ADD COLUMN actor TEXT DEFAULT ''")  # 发起人(openid或kiosk)
             except sqlite3.OperationalError:
                 pass
-            for sql in ("ALTER TABLE items ADD COLUMN stored_at TEXT",
+            for sql in ("ALTER TABLE users ADD COLUMN web_username TEXT",
+                        "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''",
+                        "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
+                        "ALTER TABLE items ADD COLUMN stored_at TEXT",
                         "ALTER TABLE items ADD COLUMN batch_no INTEGER"):
                 try:
                     c.execute(sql)

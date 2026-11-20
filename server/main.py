@@ -24,7 +24,8 @@ import batch
 import colors
 import db
 import volume
-from auth import Auth, check_pi_secret, make_jwt, sign_unlock
+from auth import (Auth, check_pi_secret, hash_password, make_jwt,
+                  public_user, sign_unlock, verify_password)
 from wechat import WeChat
 
 BASE = Path(__file__).resolve().parent
@@ -223,7 +224,9 @@ admin_dep = auth.require_role("admin")                # 用户/日志/角色：�
 
 # ---------- 工具 ----------
 def rows(sql, args=()):
-    return [dict(r) for r in db.conn().execute(sql, args).fetchall()]
+    # 用户行的 password_hash 绝不回传前端；其余表原样
+    return [public_user(dict(r)) if "password_hash" in r.keys()
+            else dict(r) for r in db.conn().execute(sql, args).fetchall()]
 
 
 def gen_code():
@@ -328,17 +331,92 @@ async def login(req: LoginReq):
         if sets:
             args.append(openid)
             c.execute(f"UPDATE users SET {','.join(sets)} WHERE openid=?", args)
-        user = dict(c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone())
+        user = public_user(dict(c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()))
     else:
         role = "admin" if openid in ADMIN_BOOTSTRAP_OPENIDS else (
             "manager" if openid in MANAGER_BOOTSTRAP_OPENIDS else "student")
         cur = c.execute("INSERT INTO users(openid,name,room,phone,role,building) VALUES(?,?,?,?,?,?)",
                         (openid, name, room, req.phone, role, building))
-        user = dict(c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone())
+        user = public_user(dict(c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()))
         db.log_event("register", openid, f"role={role} name={name} room={room} building={building}")
     token = make_jwt(openid, role, CFG["security"]["jwt_secret"],
                      CFG["security"]["jwt_expire_hours"])
     return {"token": token, "role": role, "user": user}
+
+
+# ---------- 网站登录（账号+密码，内网自用；签同格式 JWT，openid 对应用户） ----------
+class WebLoginReq(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/v1/web/login")
+def web_login(req: WebLoginReq):
+    """网站账号密码登录：按 web_username 查 users，签与小程序相同格式的 JWT。
+    密码哈希只做校验、绝不回传；未开通网站账号的用户返回 401。"""
+    username, password = req.username.strip(), req.password
+    if not username or not password:
+        raise HTTPException(400, "账号和密码不能为空")
+    c = db.conn()
+    row = c.execute("SELECT * FROM users WHERE web_username=?", (username,)).fetchone()
+    if not row or not verify_password(password, row["password_hash"] or ""):
+        raise HTTPException(401, "账号或密码错误")
+    if row["openid"] == UNCLAIMED_OPENID:
+        raise HTTPException(401, "该账号不可登录")
+    token = make_jwt(row["openid"], row["role"], CFG["security"]["jwt_secret"],
+                     CFG["security"]["jwt_expire_hours"])
+    return {"token": token, "role": row["role"], "user": public_user(dict(row)),
+            "must_change_password": bool(row["must_change_password"])}
+
+
+class WebPasswordReq(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.post("/api/v1/web/change-password")
+def web_change_password(req: WebPasswordReq, user: dict = Depends(me_dep)):
+    """网站用户自助改密：须提供旧密码，新密码不少于 6 位。"""
+    if len(req.new_password) < 6:
+        raise HTTPException(400, "新密码至少 6 位")
+    row = db.conn().execute("SELECT password_hash FROM users WHERE id=?",
+                            (user["id"],)).fetchone()
+    if not row or not verify_password(req.old_password, row["password_hash"] or ""):
+        raise HTTPException(400, "原密码错误")
+    db.conn().execute("UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?",
+                      (hash_password(req.new_password), user["id"]))
+    db.log_event("web_password_change", user["openid"], "网站账号改密")
+    return {"ok": True}
+
+
+class WebAccountReq(BaseModel):
+    web_username: str
+    password: str
+    must_change_password: bool = False
+
+
+@app.post("/api/v1/admin/users/{user_id}/web-account")
+def set_web_account(user_id: int, req: WebAccountReq,
+                    admin: dict = Depends(admin_dep)):
+    """超管给任意用户开通/重置网站登录账号（与小程序 openid 一一对应）。"""
+    username = req.web_username.strip()
+    if not username or not req.password:
+        raise HTTPException(400, "网站账号和密码不能为空")
+    if len(req.password) < 6:
+        raise HTTPException(400, "密码至少 6 位")
+    c = db.conn()
+    row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    dup = c.execute("SELECT id FROM users WHERE web_username=? AND id<>?",
+                    (username, user_id)).fetchone()
+    if dup:
+        raise HTTPException(400, "网站账号已被占用")
+    c.execute("UPDATE users SET web_username=?, password_hash=?, must_change_password=? WHERE id=?",
+              (username, hash_password(req.password), int(req.must_change_password), user_id))
+    db.log_event("web_account_set", admin["openid"],
+                 f"user#{user_id} {row['name']} -> 网站账号 {username}")
+    return {"ok": True, "web_username": username}
 
 
 @app.get("/api/v1/me")
@@ -361,7 +439,7 @@ def update_me(req: ProfileReq, user: dict = Depends(me_dep)):
                       (name, room, user["id"]))
     db.log_event("profile_edit", user["openid"], f"{name} {room}")
     row = db.conn().execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
-    return {"user": dict(row)}
+    return {"user": public_user(dict(row))}
 
 
 # ---------- 物品登记（共用）----------

@@ -524,6 +524,45 @@ mon6 = [n for n in nd6["nodes"] if n["fridge_id"] == "fridge-mon"][0]
 check("旧版心跳无供电字段兼容", mon6["power"] == {} and mon6["power_flags"] == [],
       str(mon6.get("power")))
 
+# 6d. 网站账号密码登录（web/ 前端用）：与小程序 JWT 同格式、密码哈希不外泄
+web_user = "webtest-" + uuid.uuid4().hex[:6]
+web_pw = "WebTest@123"
+web_uid = [u for u in c.get(B + "/api/v1/users", headers=H(mgr["token"])).json()["users"]
+           if u["openid"] == "dev_dev:stuA"][0]["id"]
+r = c.post(B + f"/api/v1/admin/users/{web_uid}/web-account",
+           json={"web_username": web_user, "password": web_pw}, headers=H(mgr["token"]))
+check("超管开通网站账号", r.status_code == 200, str(r.status_code))
+check("网站账号不能重复",
+      c.post(B + f"/api/v1/admin/users/{mgr['user']['id']}/web-account",
+             json={"web_username": web_user, "password": web_pw},
+             headers=H(mgr["token"])).status_code == 400, "")
+check("密码太短被拒",
+      c.post(B + f"/api/v1/admin/users/{web_uid}/web-account",
+             json={"web_username": web_user, "password": "123"},
+             headers=H(mgr["token"])).status_code == 400, "")
+check("密码错误登录失败",
+      c.post(B + "/api/v1/web/login", json={"username": web_user, "password": "wrong"}).status_code == 401, "")
+r = c.post(B + "/api/v1/web/login", json={"username": web_user, "password": web_pw})
+check("网站账号密码登录成功", r.status_code == 200 and r.json()["role"] == "student",
+      str(r.status_code))
+web_token = r.json()["token"]
+check("网站 JWT 可调用现有 API",
+      c.get(B + "/api/v1/me", headers=H(web_token)).status_code == 200, "")
+check("登录响应不泄漏密码哈希", "password_hash" not in str(r.json()), "")
+check("改密需原密码",
+      c.post(B + "/api/v1/web/change-password",
+             json={"old_password": "wrong", "new_password": "NewPass@456"},
+             headers=H(web_token)).status_code == 400, "")
+check("改密后新密码可登录",
+      c.post(B + "/api/v1/web/change-password",
+             json={"old_password": web_pw, "new_password": "NewPass@456"},
+             headers=H(web_token)).status_code == 200 and
+      c.post(B + "/api/v1/web/login",
+             json={"username": web_user, "password": "NewPass@456"}).status_code == 200, "")
+check("用户列表不泄漏密码哈希",
+      all("password_hash" not in u for u in
+          c.get(B + "/api/v1/users", headers=H(mgr["token"])).json()["users"]), "")
+
 n_fail = sum(1 for _, v in ok if not v)
 print(f"\n===== 回归结果: {len(ok)-n_fail}/{len(ok)} 通过 =====")
 raise SystemExit(1 if n_fail else 0)
