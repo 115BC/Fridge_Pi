@@ -39,6 +39,8 @@
           <div class="muted">楼宇：${esc(u.building || '待补登记')} · 在库额度：${esc(u.quota || 5)} 件</div>
           ${state.contact ? `<div class="muted" style="margin-top:8px">超管联系方式：${esc(state.contact)}
             <span class="copy" id="copyContact">复制</span></div>` : ''}
+          <div class="muted" style="margin-top:6px">${u.email ? `校园邮箱 ${esc(u.email)} · 学号 ${esc(u.student_id || '-')}`
+            : '<button class="btn btn-ghost btn-sm" id="btnBindEmail">绑定校园邮箱</button>'}</div>
           <div class="muted" style="margin-top:6px">楼宇或姓名有误？联系超管修改。</div>
         </div>
         <div class="card">
@@ -85,6 +87,7 @@
   function bind() {
     const $ = id => document.getElementById(id);
     $('btnEditProfile') && ($('btnEditProfile').onclick = editProfile);
+    $('btnBindEmail') && ($('btnBindEmail').onclick = bindEmail);
     $('copyContact') && ($('copyContact').onclick = () => w.Core.copy(state.contact));
     $('btnRefresh') && ($('btnRefresh').onclick = load);
     $('btnCancelQueue') && ($('btnCancelQueue').onclick = async () => {
@@ -138,7 +141,26 @@
     } catch (e) { toast('保存失败：' + e.message); }
   }
 
-  function showQr(id) {
+  async function bindEmail() {
+    const email = await w.Core.modal({ title: '绑定校园邮箱', content: '学号@mail.bnu.edu.cn（前缀须为纯数字学号）',
+                                       input: true, placeholder: '202411081071@mail.bnu.edu.cn' });
+    if (!email || !email.trim()) return;
+    try {
+      await w.Core.post('/api/v1/email/send-code',
+                        { email: email.trim(), purpose: 'bind' }, false);
+      const code = await w.Core.modal({ title: '邮箱验证码', content: '验证码已发送，请输入 6 位验证码',
+                                        input: true, placeholder: '6位验证码' });
+      if (!code || !code.trim()) return;
+      const r = await w.Core.post('/api/v1/web/bind-email',
+                                  { email: email.trim(), code: code.trim() });
+      const me = await w.Core.get('/api/v1/me');
+      store.user = me.user;
+      toast('绑定成功，学号 ' + r.student_id);
+      renderBody();
+    } catch (e) { toast('绑定失败：' + e.message); }
+  }
+
+  async function showQr(id) {
     get(`/api/v1/items/${id}/qr`).then(d => {
       const mask = document.createElement('div');
       mask.className = 'modal-mask';

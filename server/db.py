@@ -25,6 +25,19 @@ CREATE TABLE IF NOT EXISTS users(
   web_username TEXT UNIQUE,               -- 网站登录名（NULL=未开通）
   password_hash TEXT DEFAULT '',          -- pbkdf2$salt$hash
   must_change_password INTEGER DEFAULT 0,
+  email TEXT UNIQUE,                      -- 校园邮箱 xxx@mail.bnu.edu.cn
+  student_id TEXT UNIQUE,                 -- 邮箱前缀纯数字学号
+  email_verified INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS email_codes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  purpose TEXT NOT NULL,                  -- register | bind | reset
+  expires_at TEXT NOT NULL,
+  used INTEGER DEFAULT 0,
+  attempts INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS items(
@@ -121,7 +134,20 @@ CREATE TABLE IF NOT EXISTS users(
   web_username VARCHAR(64) UNIQUE,
   password_hash VARCHAR(255) DEFAULT '',
   must_change_password TINYINT DEFAULT 0,
+  email VARCHAR(128) UNIQUE,
+  student_id VARCHAR(32) UNIQUE,
+  email_verified TINYINT DEFAULT 0,
   quota INT NOT NULL DEFAULT 5,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS email_codes(
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  email VARCHAR(128) NOT NULL,
+  code_hash VARCHAR(255) NOT NULL,
+  purpose VARCHAR(16) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used TINYINT DEFAULT 0,
+  attempts INT DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS items(
@@ -207,7 +233,7 @@ CREATE TABLE IF NOT EXISTS queue(
 """
 
 TABLES = ("users", "buildings", "items", "unlock_commands", "reminders", "pi_nodes",
-          "events", "settings", "calls", "queue")
+          "events", "settings", "calls", "queue", "email_codes")
 
 _local = threading.local()
 
@@ -349,7 +375,10 @@ def init():
             pass
         for col, ddl in (("web_username", "VARCHAR(64) UNIQUE"),
                          ("password_hash", "VARCHAR(255) DEFAULT ''"),
-                         ("must_change_password", "TINYINT DEFAULT 0")):
+                         ("must_change_password", "TINYINT DEFAULT 0"),
+                         ("email", "VARCHAR(128) UNIQUE"),
+                         ("student_id", "VARCHAR(32) UNIQUE"),
+                         ("email_verified", "TINYINT DEFAULT 0")):
             try:
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             except Exception:
@@ -392,6 +421,9 @@ def init():
             for sql in ("ALTER TABLE users ADD COLUMN web_username TEXT",
                         "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''",
                         "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0",
+                        "ALTER TABLE users ADD COLUMN email TEXT",
+                        "ALTER TABLE users ADD COLUMN student_id TEXT",
+                        "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
                         "ALTER TABLE items ADD COLUMN stored_at TEXT",
                         "ALTER TABLE items ADD COLUMN batch_no INTEGER"):
                 try:

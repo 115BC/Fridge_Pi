@@ -1,6 +1,8 @@
 import asyncio
 import os
 import re
+import secrets
+import string
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -23,9 +25,10 @@ import numpy as np  # noqa: E402
 import batch
 import colors
 import db
+import emailer
 import volume
 from auth import (Auth, check_pi_secret, hash_password, make_jwt,
-                  public_user, sign_unlock, verify_password)
+                  public_user, sign_unlock, validate_password, verify_password)
 from wechat import WeChat
 
 BASE = Path(__file__).resolve().parent
@@ -100,6 +103,9 @@ def bootstrap_web_account():
     password = os.environ.get("WEB_BOOTSTRAP_PASSWORD") or ""
     openid = (os.environ.get("WEB_BOOTSTRAP_OPENID") or "").strip()
     if not username or not password:
+        return
+    if msg := validate_password(password):
+        print(f"[bootstrap] 环境变量密码不符合规则：{msg}，跳过网站账号自举")
         return
     c = db.conn()
     row = _find_bootstrap_user(c, openid, username)
@@ -431,8 +437,8 @@ class WebPasswordReq(BaseModel):
 @app.post("/api/v1/web/change-password")
 def web_change_password(req: WebPasswordReq, user: dict = Depends(me_dep)):
     """网站用户自助改密：须提供旧密码，新密码不少于 6 位。"""
-    if len(req.new_password) < 6:
-        raise HTTPException(400, "新密码至少 6 位")
+    if msg := validate_password(req.new_password):
+        raise HTTPException(400, msg)
     row = db.conn().execute("SELECT password_hash FROM users WHERE id=?",
                             (user["id"],)).fetchone()
     if not row or not verify_password(req.old_password, row["password_hash"] or ""):
@@ -457,8 +463,8 @@ def set_web_account(user_id: int, req: WebAccountReq,
     username = req.web_username.strip()
     if not username or not req.password:
         raise HTTPException(400, "网站账号和密码不能为空")
-    if len(req.password) < 6:
-        raise HTTPException(400, "密码至少 6 位")
+    if msg := validate_password(req.password):
+        raise HTTPException(400, msg)
     c = db.conn()
     row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
     if not row:
@@ -482,8 +488,8 @@ def web_account_init(req: WebAccountReq, x_pi_secret: Optional[str] = Header(Non
     check_pi_secret(x_pi_secret, PI_SECRET)
     if not req.web_username.strip() or not req.password:
         raise HTTPException(400, "网站账号和密码不能为空")
-    if len(req.password) < 6:
-        raise HTTPException(400, "密码至少 6 位")
+    if msg := validate_password(req.password):
+        raise HTTPException(400, msg)
     c = db.conn()
     row = c.execute("SELECT * FROM users WHERE openid=?", (req.openid,)).fetchone() if req.openid else None
     if not row:
@@ -498,6 +504,160 @@ def web_account_init(req: WebAccountReq, x_pi_secret: Optional[str] = Header(Non
                  f"{row['name']} -> 网站账号 {req.web_username.strip()}")
     return {"ok": True, "web_username": req.web_username.strip(),
             "name": row["name"], "role": row["role"]}
+
+
+# ---------- 校园邮箱：注册 / 绑定 / 重置密码（web-only 分支） ----------
+class SendCodeReq(BaseModel):
+    email: str
+    purpose: str   # register | bind | reset
+
+
+@app.post("/api/v1/email/send-code")
+def send_email_code(req: SendCodeReq):
+    """发送校园邮箱验证码。错误提示统一，避免枚举账号。"""
+    if req.purpose not in ("register", "bind", "reset"):
+        raise HTTPException(400, "验证码用途非法")
+    try:
+        email = emailer.normalized_email(req.email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ok, msg = emailer.can_send(email)
+    if not ok:
+        raise HTTPException(429, msg)
+    c = db.conn()
+    exists = c.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+    if req.purpose == "register" and exists:
+        raise HTTPException(400, "该邮箱已注册")
+    if req.purpose == "bind" and exists:
+        raise HTTPException(400, "该邮箱已被绑定")
+    if req.purpose == "reset" and not exists:
+        raise HTTPException(400, "该邮箱未绑定账号")
+    emailer.send_code(email, req.purpose)
+    return {"ok": True, "email": email}
+
+
+class RegisterReq(BaseModel):
+    name: str
+    room: str
+    email: str
+    code: str
+    password: str
+
+
+@app.post("/api/v1/web/register")
+def web_register(req: RegisterReq):
+    """邮箱验证码注册：学号=邮箱纯数字前缀=登录名。"""
+    name, room = req.name.strip(), req.room.strip()
+    if not name or not room:
+        raise HTTPException(400, "姓名和寝室号不能为空")
+    if msg := validate_password(req.password):
+        raise HTTPException(400, msg)
+    try:
+        email = emailer.normalized_email(req.email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ok, msg = emailer.verify_code(email, req.code, "register")
+    if not ok:
+        raise HTTPException(400, msg)
+    sid = emailer.student_id_of(email)
+    c = db.conn()
+    if c.execute("SELECT id FROM users WHERE student_id=? OR email=? OR web_username=?",
+                 (sid, email, sid)).fetchone():
+        raise HTTPException(400, "该学号或邮箱已注册")
+    openid = f"web-{sid}"
+    if c.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone():
+        openid = f"web-{sid}-{uuid.uuid4().hex[:6]}"
+    cur = c.execute(
+        "INSERT INTO users(openid,name,room,role,web_username,password_hash,"
+        "email,student_id,email_verified,must_change_password) "
+        "VALUES(?,?,?,'student',?,?,?,?,1,0)",
+        (openid, name, room, sid, hash_password(req.password), email, sid))
+    user = public_user(dict(c.execute("SELECT * FROM users WHERE id=?",
+                                      (cur.lastrowid,)).fetchone()))
+    token = make_jwt(openid, "student", CFG["security"]["jwt_secret"],
+                     CFG["security"]["jwt_expire_hours"])
+    db.log_event("web_register", openid, f"{name} {room} 学号{sid}")
+    return {"token": token, "role": "student", "user": user,
+            "must_change_password": False}
+
+
+class BindEmailReq(BaseModel):
+    email: str
+    code: str
+
+
+@app.post("/api/v1/web/bind-email")
+def web_bind_email(req: BindEmailReq, user: dict = Depends(me_dep)):
+    """已有账号补绑校园邮箱：验证邮箱后写入 email/student_id，不动姓名寝室。"""
+    try:
+        email = emailer.normalized_email(req.email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ok, msg = emailer.verify_code(email, req.code, "bind")
+    if not ok:
+        raise HTTPException(400, msg)
+    sid = emailer.student_id_of(email)
+    c = db.conn()
+    dup = c.execute("SELECT id FROM users WHERE (email=? OR student_id=?) AND id<>?",
+                    (email, sid, user["id"])).fetchone()
+    if dup:
+        raise HTTPException(400, "该邮箱或学号已被其他账号绑定")
+    c.execute("UPDATE users SET email=?, student_id=?, email_verified=1 WHERE id=?",
+              (email, sid, user["id"]))
+    db.log_event("web_bind_email", user["openid"], f"绑定校园邮箱 {email} 学号{sid}")
+    return {"ok": True, "email": email, "student_id": sid}
+
+
+class ResetPasswordReq(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+
+@app.post("/api/v1/web/reset-password")
+def web_reset_password(req: ResetPasswordReq):
+    """忘记密码：邮箱验证码验证后设置新密码。"""
+    if msg := validate_password(req.new_password):
+        raise HTTPException(400, msg)
+    try:
+        email = emailer.normalized_email(req.email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ok, msg = emailer.verify_code(email, req.code, "reset")
+    if not ok:
+        raise HTTPException(400, msg)
+    row = db.conn().execute("SELECT id, openid FROM users WHERE email=?", (email,)).fetchone()
+    if not row:
+        raise HTTPException(400, "该邮箱未绑定账号")
+    db.conn().execute("UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?",
+                      (hash_password(req.new_password), row["id"]))
+    db.log_event("web_reset_password", row["openid"], "通过邮箱验证码重置密码")
+    return {"ok": True}
+
+
+@app.post("/api/v1/admin/users/{user_id}/reset-password")
+def admin_reset_password(user_id: int, admin: dict = Depends(admin_dep)):
+    """超管重置任意用户密码：生成随机密码发到学生邮箱，响应不回传（超管不可见）。"""
+    c = db.conn()
+    row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    if not row["email"]:
+        raise HTTPException(400, "该用户未绑定校园邮箱，无法邮件重置密码")
+    # 保证含大写、小写、数字（规则校验见 auth.validate_password）
+    alphabet_lower = string.ascii_lowercase
+    chars = [secrets.choice(string.ascii_uppercase), secrets.choice(alphabet_lower),
+             secrets.choice(string.digits)]
+    chars += [secrets.choice(string.ascii_letters + string.digits + "!@#$%^&*") for _ in range(9)]
+    secrets.SystemRandom().shuffle(chars)
+    new_pw = "".join(chars)
+    c.execute("UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?",
+              (hash_password(new_pw), user_id))
+    emailer.send_random_password(row["email"], new_pw)
+    db.log_event("admin_reset_password", admin["openid"],
+                 f"user#{user_id} {row['name']} 随机密码已发至 {row['email']}")
+    return {"ok": True, "email": row["email"],
+            "detail": "新密码已发送到该用户校园邮箱，超管不可见"}
 
 
 @app.get("/api/v1/me")
@@ -1091,6 +1251,64 @@ def set_quota(user_id: int, req: QuotaReq, user: dict = Depends(manager_dep)):
     db.conn().execute("UPDATE users SET quota=? WHERE id=?", (req.quota, user_id))
     db.log_event("quota_set", user["openid"], f"user#{user_id} -> {req.quota} 件")
     return {"ok": True, "quota": req.quota}
+
+
+class AdminEditUserReq(BaseModel):
+    name: Optional[str] = None
+    room: Optional[str] = None
+    building: Optional[str] = None
+    role: Optional[str] = None
+    quota: Optional[int] = None
+    email: Optional[str] = None
+    student_id: Optional[str] = None
+    web_username: Optional[str] = None
+    phone: Optional[str] = None
+
+
+@app.post("/api/v1/admin/users/{user_id}/edit")
+def admin_edit_user(user_id: int, req: AdminEditUserReq,
+                    admin: dict = Depends(admin_dep)):
+    """超管改任意用户信息（密码除外，密码只能邮件重置）。只更新显式传入的字段。"""
+    c = db.conn()
+    row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    data = req.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(400, "没有要修改的字段")
+    allowed = {"name", "room", "building", "role", "quota", "email",
+               "student_id", "web_username", "phone"}
+    data = {k: v for k, v in data.items() if k in allowed}
+    if "role" in data and data["role"] not in ("student", "manager", "admin"):
+        raise HTTPException(400, "非法角色")
+    if "role" in data and user_id == admin["id"] and data["role"] != row["role"]:
+        raise HTTPException(400, "不能修改自己的角色（防止自锁）")
+    if "quota" in data and not (1 <= data["quota"] <= 50):
+        raise HTTPException(400, "额度需在 1~50 件之间")
+    if "building" in data and data["building"] and not c.execute(
+            "SELECT name FROM buildings WHERE name=?", (data["building"],)).fetchone():
+        raise HTTPException(400, "楼宇不存在")
+    if "email" in data and data["email"]:
+        try:
+            data["email"] = emailer.normalized_email(data["email"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    for field in ("email", "student_id", "web_username"):
+        if field in data and data[field]:
+            dup = c.execute(f"SELECT id FROM users WHERE {field}=? AND id<>?",
+                            (data[field], user_id)).fetchone()
+            if dup:
+                raise HTTPException(400, f"{field} 已被其他账号占用")
+    sets, args = [], []
+    for k, v in data.items():
+        sets.append(f"{k}=?")
+        args.append(v.strip() if isinstance(v, str) else v)
+    args.append(user_id)
+    c.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", args)
+    db.log_event("admin_edit_user", admin["openid"],
+                 f"user#{user_id} 改 {','.join(sorted(data))}")
+    return {"ok": True, "user": public_user(dict(c.execute(
+        "SELECT * FROM users WHERE id=?", (user_id,)).fetchone()))}
 
 
 @app.get("/api/v1/debug/pi")

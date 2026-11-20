@@ -65,6 +65,13 @@
     if (sec == null) return '-';
     return sec < 60 ? sec + '秒前' : Math.floor(sec / 60) + '分钟前';
   }
+  const PASSWORD_HINT = '8~16位，须含大写字母、小写字母和数字，可用 !@#$%^&*() 等符号';
+  function validPassword(pw) {
+    if (typeof pw !== 'string' || pw.length < 8 || pw.length > 16) return false;
+    if (!/[A-Z]/.test(pw) || !/[a-z]/.test(pw) || !/\d/.test(pw)) return false;
+    return !/[^A-Za-z0-9!@#$%^&*()\-_=+\[\]{};:'",.<>/?\\`~]/.test(pw);
+  }
+
   function copy(text) {
     if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('已复制'), () => toast('复制失败'));
     else toast('当前浏览器不支持复制');
@@ -99,5 +106,5 @@
   const ROLES = { student: '学生', manager: '宿管', admin: '超管' };
 
   w.Core = { store, request, get, post, put, del, toast, esc, fmtDur, fmtAgo, copy, modal,
-             COLORS, STATUS, ROLES };
+             COLORS, STATUS, ROLES, PASSWORD_HINT, validPassword };
 })(window);

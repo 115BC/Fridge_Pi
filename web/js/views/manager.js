@@ -302,19 +302,58 @@
         <div class="muted">${S.buildings.map(b => `${esc(b.name)}→${esc(b.fridge_id)} <button class="btn btn-danger btn-sm" data-delb="${esc(b.name)}">删</button>`).join(' ')}</div></div>` : ''}
       <div class="card"><div class="card-title">学生列表（${S.users.length}）</div>
         <div class="toolbar"><input id="uQ" placeholder="搜索姓名/寝室" value="${esc(S.q)}"></div>
-        <table><thead><tr><th>姓名/寝室</th><th>楼宇</th><th>角色</th><th>额度</th><th>网站账号</th><th>操作</th></tr></thead><tbody>
+        <table><thead><tr><th>姓名/寝室</th><th>楼宇</th><th>角色</th><th>额度</th><th>网站账号/学号</th><th>校园邮箱</th><th>操作</th></tr></thead><tbody>
         ${S.users.map(u => `<tr><td><b>${esc(u.name)}</b><div class="muted">${esc(u.room)} · ${esc(u.openid)}</div></td>
           <td>${esc(u.building || '未分楼')}</td><td>${ROLES[u.role] || u.role}</td><td>${esc(u.quota || 5)}</td>
-          <td>${esc(u.web_username || '-')}</td><td><div class="row-actions">
+          <td>${esc(u.web_username || '-')}<div class="muted">${esc(u.student_id || '')}</div></td>
+          <td>${esc(u.email || '未绑定')}</td><td><div class="row-actions">
             <button class="btn btn-ghost btn-sm" data-act="profile" data-id="${u.id}" data-name="${esc(u.name)}" data-room="${esc(u.room)}">改资料</button>
             ${isA ? `<button class="btn btn-ghost btn-sm" data-act="building" data-id="${u.id}" data-building="${esc(u.building)}">改楼</button>
             <button class="btn btn-ghost btn-sm" data-act="role" data-id="${u.id}" data-role="${u.role}">改角色</button>` : ''}
             <button class="btn btn-ghost btn-sm" data-act="quota" data-id="${u.id}" data-quota="${esc(u.quota || 5)}">额度</button>
-            ${isA ? `<button class="btn btn-primary btn-sm" data-act="web" data-id="${u.id}" data-name="${esc(u.name)}">${u.web_username ? '重置网站密码' : '开通网站账号'}</button>` : ''}
+            ${isA ? `<button class="btn btn-primary btn-sm" data-act="web" data-id="${u.id}" data-name="${esc(u.name)}">${u.web_username ? '重置网站密码' : '开通网站账号'}</button>
+            <button class="btn btn-ghost btn-sm" data-act="editall" data-id="${u.id}">改全部</button>
+            <button class="btn btn-ghost btn-sm" data-act="mailreset" data-id="${u.id}" data-name="${esc(u.name)}">邮件重置密码</button>` : ''}
           </div></td></tr>`).join('')}
         </tbody></table></div>`;
     bindStudents(box);
   }
+  function editAllUser(id, box) {
+    const u = S.users.find(x => x.id == id);
+    if (!u) return toast('用户不存在');
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    mask.innerHTML = `<div class="modal" style="max-width:560px">
+      <div class="modal-title">超管编辑：${esc(u.name)}（密码不可改，请用"邮件重置密码"）</div>
+      <div class="grid g2" style="gap:6px">
+        ${[['name','姓名',u.name],['room','寝室号',u.room],['building','楼宇',u.building],
+           ['role','角色(student/manager/admin)',u.role],['quota','额度',u.quota],
+           ['email','校园邮箱',u.email],['student_id','学号',u.student_id],
+           ['web_username','网站登录名',u.web_username],['phone','电话',u.phone]]
+          .map(([k,label,v]) => `<div><label>${esc(label)}</label><input data-f="${k}" value="${esc(v || '')}"></div>`).join('')}
+      </div>
+      <div class="modal-actions" style="margin-top:14px">
+        <button class="btn btn-ghost" data-act="cancel">取消</button>
+        <button class="btn btn-primary" data-act="save">保存</button>
+      </div></div>`;
+    document.body.appendChild(mask);
+    mask.onclick = async e => {
+      const act = e.target.dataset.act;
+      if (act === 'cancel' || e.target === mask) return mask.remove();
+      if (act !== 'save') return;
+      const data = {};
+      mask.querySelectorAll('[data-f]').forEach(inp => {
+        const v = inp.value.trim();
+        if (v !== '') data[inp.dataset.f] = inp.dataset.f === 'quota' ? Number(v) : v;
+      });
+      if (!data.name || !data.room) return toast('姓名和寝室号不能为空');
+      try {
+        await post(`/api/v1/admin/users/${id}/edit`, data);
+        mask.remove(); toast('已保存'); loadStudents(box);
+      } catch (err) { toast('失败：' + err.message); }
+    };
+  }
+
   function bindStudents(box) {
     const on = (id, fn) => { const el = box.querySelector('#' + id); if (el) el.onclick = fn; };
     const uq = box.querySelector('#uQ');
@@ -361,9 +400,16 @@
           const uname = await modal({ title: '网站账号', content: '登录名（唯一）', input: true,
                                       inputValue: btn.dataset.name + '-' + (S.users.find(x => x.id == id) || {}).room });
           if (!uname) return;
-          const pw = await modal({ title: '初始密码', content: '至少 6 位', input: true });
-          if (!pw || pw.length < 6) return toast('密码至少 6 位');
+          const pw = await modal({ title: '初始密码', content: w.Core.PASSWORD_HINT, input: true });
+          if (!pw || !w.Core.validPassword(pw)) return toast(w.Core.PASSWORD_HINT);
           await post(`/api/v1/admin/users/${id}/web-account`, { web_username: uname.trim(), password: pw, must_change_password: true });
+        } else if (a === 'editall') {
+          return editAllUser(id, box);
+        } else if (a === 'mailreset') {
+          if (!await modal({ title: '邮件重置密码', content: `系统将生成随机密码发送到「${btn.dataset.name}」的校园邮箱，你看不到新密码。确定继续？` })) return;
+          const r = await post(`/api/v1/admin/users/${id}/reset-password`, {});
+          await modal({ title: '已发送', content: r.detail || '新密码已发送到学生邮箱', showCancel: false });
+          return;
         }
         toast('已保存'); loadStudents(box);
       } catch (e) { toast('失败：' + e.message); }

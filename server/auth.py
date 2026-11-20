@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import os
+import re
 import time
 from typing import Optional
 
@@ -12,6 +13,28 @@ import db
 
 ALGO = "HS256"
 PBKDF2_ITERS = 120000
+PASSWORD_MIN = 8
+PASSWORD_MAX = 16
+# 常用特殊符号：!@#$%^&*()-_=+[]{};:'",.<>/?\`~
+SPECIAL_CHARS = r"!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\`~"
+
+
+def validate_password(password: str) -> str:
+    """密码规则：8~16 位，必须含大写、小写、数字，允许常用特殊符号。
+    返回错误信息（空串=通过）。"""
+    if not isinstance(password, str):
+        return "密码格式错误"
+    if not (PASSWORD_MIN <= len(password) <= PASSWORD_MAX):
+        return f"密码长度需 {PASSWORD_MIN}~{PASSWORD_MAX} 位"
+    if not re.search(r"[A-Z]", password):
+        return "密码必须包含大写字母"
+    if not re.search(r"[a-z]", password):
+        return "密码必须包含小写字母"
+    if not re.search(r"\d", password):
+        return "密码必须包含数字"
+    if re.search(r"[^A-Za-z0-9" + SPECIAL_CHARS + r"]", password):
+        return "密码含不支持的特殊符号"
+    return ""
 
 
 def hash_password(password: str) -> str:

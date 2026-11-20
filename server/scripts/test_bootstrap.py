@@ -35,7 +35,7 @@ c.execute("UPDATE users SET web_username='', password_hash='' WHERE id=?", (user
 
 # 1. 有环境变量且用户无网站账号 -> 自动开通
 os.environ["WEB_BOOTSTRAP_USERNAME"] = "bootuser"
-os.environ["WEB_BOOTSTRAP_PASSWORD"] = "boot123456"
+os.environ["WEB_BOOTSTRAP_PASSWORD"] = "Boot@1234"
 os.environ["WEB_BOOTSTRAP_OPENID"] = "dev_bootstrap_user"
 main.bootstrap_web_account()
 row = c.execute("SELECT web_username, must_change_password, password_hash FROM users WHERE id=?",
@@ -43,8 +43,8 @@ row = c.execute("SELECT web_username, must_change_password, password_hash FROM u
 check("自举创建网站账号", row["web_username"] == "bootuser", str(dict(row)))
 check("自举强制首次改密", row["must_change_password"] == 1, str(row["must_change_password"]))
 check("自举写入的是哈希不是明文",
-      row["password_hash"] and "boot123456" not in row["password_hash"], "")
-check("哈希可校验", main.verify_password("boot123456", row["password_hash"]), "")
+      row["password_hash"] and "Boot@1234" not in row["password_hash"], "")
+check("哈希可校验", main.verify_password("Boot@1234", row["password_hash"]), "")
 check("错误密码校验失败", not main.verify_password("wrong", row["password_hash"]), "")
 
 # 2. 重复启动不重置已有账号的密码
@@ -66,7 +66,7 @@ for r in others:
     c.execute("UPDATE users SET role='manager' WHERE id=?", (r["id"],))
 os.environ.pop("WEB_BOOTSTRAP_OPENID", None)
 os.environ["WEB_BOOTSTRAP_USERNAME"] = "onlyadmin"
-os.environ["WEB_BOOTSTRAP_PASSWORD"] = "only123456"
+os.environ["WEB_BOOTSTRAP_PASSWORD"] = "Only@1234"
 c.execute("UPDATE users SET web_username='', password_hash='' WHERE openid=?",
           ("dev_bootstrap_user",))
 main.bootstrap_web_account()

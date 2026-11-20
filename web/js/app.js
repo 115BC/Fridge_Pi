@@ -11,6 +11,8 @@
     currentView = 'login';
     w.LoginView.render(app);
   }
+  function goRegister() { currentView = 'register'; w.RegisterView.render(app); }
+  function goForgot() { currentView = 'forgot'; w.ForgotView.render(app); }
   function goHome() {
     const role = store.role;
     if (role === 'student') goStudent();
@@ -61,6 +63,6 @@
     }
   }
 
-  w.App = { render, goLogin, goHome, goStudent, goManager, header, bindHeader };
+  w.App = { render, goLogin, goRegister, goForgot, goHome, goStudent, goManager, header, bindHeader };
   boot();
 })(window);
