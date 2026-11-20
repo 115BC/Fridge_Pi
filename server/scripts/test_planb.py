@@ -562,6 +562,28 @@ check("改密后新密码可登录",
 check("用户列表不泄漏密码哈希",
       all("password_hash" not in u for u in
           c.get(B + "/api/v1/users", headers=H(mgr["token"])).json()["users"]), "")
+# 6e. Pi 密钥 bootstrap：网站账号体系首次上线时由派上开账号（超管自己还没网站账号时的通路）
+r = c.post(B + "/api/v1/admin/web-account-init",
+           json={"web_username": "boot-" + uuid.uuid4().hex[:4], "password": "boot123456",
+                 "openid": "dev_dev:stuA"})
+check("bootstrap 端点需 Pi 密钥", r.status_code == 401, str(r.status_code))
+boot_un = "boot-" + uuid.uuid4().hex[:4]
+r = c.post(B + "/api/v1/admin/web-account-init",
+           json={"web_username": boot_un, "password": "boot123456", "openid": "dev_dev:stuA"},
+           headers=PS)
+check("Pi 密钥可开通网站账号", r.status_code == 200 and r.json()["role"] == "student",
+      str(r.status_code))
+check("bootstrap 开通的账号可登录",
+      c.post(B + "/api/v1/web/login",
+             json={"username": boot_un, "password": "boot123456"}).status_code == 200, "")
+check("bootstrap 强制改密标记生效",
+      c.post(B + "/api/v1/web/login",
+             json={"username": boot_un, "password": "boot123456"}).json()
+      .get("must_change_password") is True, "")
+check("bootstrap 未知 openid 被拒",
+      c.post(B + "/api/v1/admin/web-account-init",
+             json={"web_username": "x-" + uuid.uuid4().hex[:4], "password": "boot123456",
+                   "openid": "no_such_openid"}, headers=PS).status_code == 404, "")
 
 n_fail = sum(1 for _, v in ok if not v)
 print(f"\n===== 回归结果: {len(ok)-n_fail}/{len(ok)} 通过 =====")

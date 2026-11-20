@@ -393,6 +393,7 @@ class WebAccountReq(BaseModel):
     web_username: str
     password: str
     must_change_password: bool = False
+    openid: str = ""          # 仅 Pi 通道的 bootstrap 端点用：按 openid 找用户
 
 
 @app.post("/api/v1/admin/users/{user_id}/web-account")
@@ -417,6 +418,32 @@ def set_web_account(user_id: int, req: WebAccountReq,
     db.log_event("web_account_set", admin["openid"],
                  f"user#{user_id} {row['name']} -> 网站账号 {username}")
     return {"ok": True, "web_username": username}
+
+
+@app.post("/api/v1/admin/web-account-init")
+def web_account_init(req: WebAccountReq, x_pi_secret: Optional[str] = Header(None)):
+    """开通/重置网站账号（Pi 密钥通道）：给指定 openid 或用户 id 设定网站登录名与初始密码。
+    用于网站账号体系首次上线时由派上执行一条 curl 完成 bootstrap，之后走超管后台日常维护。
+    密码只在这里作为入参，不写日志。"""
+    check_pi_secret(x_pi_secret, PI_SECRET)
+    if not req.web_username.strip() or not req.password:
+        raise HTTPException(400, "网站账号和密码不能为空")
+    if len(req.password) < 6:
+        raise HTTPException(400, "密码至少 6 位")
+    c = db.conn()
+    row = c.execute("SELECT * FROM users WHERE openid=?", (req.openid,)).fetchone() if req.openid else None
+    if not row:
+        raise HTTPException(404, "未找到该 openid 对应的用户")
+    dup = c.execute("SELECT id FROM users WHERE web_username=? AND id<>?",
+                    (req.web_username.strip(), row["id"])).fetchone()
+    if dup:
+        raise HTTPException(400, "网站账号已被占用")
+    c.execute("UPDATE users SET web_username=?, password_hash=?, must_change_password=1 WHERE id=?",
+              (req.web_username.strip(), hash_password(req.password), row["id"]))
+    db.log_event("web_account_init", "pi",
+                 f"{row['name']} -> 网站账号 {req.web_username.strip()}")
+    return {"ok": True, "web_username": req.web_username.strip(),
+            "name": row["name"], "role": row["role"]}
 
 
 @app.get("/api/v1/me")
