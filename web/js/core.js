@@ -45,8 +45,8 @@
     if (!res.ok) throw new Error(body.detail || ('请求失败 ' + res.status));
     return body;
   }
-  const get = (p, a) => request(p, 'GET', null, a !== false);
-  const post = (p, d) => request(p, 'POST', d === undefined ? {} : d);
+  const get = (p, auth) => request(p, 'GET', null, auth !== false);
+  const post = (p, d, auth) => request(p, 'POST', d === undefined ? {} : d, auth !== false);
   const put = (p, d) => request(p, 'PUT', d);
   const del = (p) => request(p, 'DELETE');
 

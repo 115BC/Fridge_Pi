@@ -24,6 +24,7 @@ def check(name, cond, extra=""):
 
 db.init()
 c = db.conn()
+UNCLAIMED = main.UNCLAIMED_OPENID
 uid = c.execute("SELECT id FROM users WHERE openid=?", ("dev_bootstrap_user",)).fetchone()
 if not uid:
     cur = c.execute("INSERT INTO users(openid,name,room,role,web_username,password_hash) "
@@ -55,6 +56,26 @@ check("重复自举不重置密码", row2["password_hash"] == row["password_hash
 os.environ["WEB_BOOTSTRAP_OPENID"] = "no_such_openid_xyz"
 main.bootstrap_web_account()
 check("未知 openid 安全跳过", True, "")
+
+# 3b. 未设 OPENID、USERNAME 也匹配不到人，但库里只有一个超管 -> 自动落到该超管
+#     （运维只填登录名与密码时的常见情形；此处临时把其他超管降级以构造唯一超管场景）
+others = c.execute("SELECT id, role FROM users WHERE role='admin' AND openid<>? AND openid<>?",
+                    (UNCLAIMED, "dev_bootstrap_user")).fetchall()
+saved = [(r["id"], r["role"]) for r in others]
+for r in others:
+    c.execute("UPDATE users SET role='manager' WHERE id=?", (r["id"],))
+os.environ.pop("WEB_BOOTSTRAP_OPENID", None)
+os.environ["WEB_BOOTSTRAP_USERNAME"] = "onlyadmin"
+os.environ["WEB_BOOTSTRAP_PASSWORD"] = "only123456"
+c.execute("UPDATE users SET web_username='', password_hash='' WHERE openid=?",
+          ("dev_bootstrap_user",))
+main.bootstrap_web_account()
+got = c.execute("SELECT web_username FROM users WHERE openid=?", ("dev_bootstrap_user",)).fetchone()
+check("唯一超管兜底可定位用户", got["web_username"] == "onlyadmin", str(dict(got)))
+for uid_, role_ in saved:
+    c.execute("UPDATE users SET role=? WHERE id=?", (role_, uid_))
+c.execute("UPDATE users SET web_username='', password_hash='' WHERE openid=?",
+          ("dev_bootstrap_user",))
 
 # 4. 无环境变量 -> 什么都不做
 for k in ("WEB_BOOTSTRAP_USERNAME", "WEB_BOOTSTRAP_PASSWORD", "WEB_BOOTSTRAP_OPENID"):

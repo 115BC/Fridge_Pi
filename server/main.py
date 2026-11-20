@@ -79,6 +79,20 @@ def build_tag() -> str:
     return "boot-" + datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def _find_bootstrap_user(c, openid: str, username: str):
+    """定位要开通网站账号的用户：优先 openid，其次按姓名找宿管/超管，
+    再退化为「库里唯一的超管」（运维只填登录名与密码时的常见情形）。"""
+    if openid:
+        return c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()
+    row = c.execute("SELECT * FROM users WHERE name=? AND role IN ('admin','manager')",
+                    (username,)).fetchone()
+    if row:
+        return row
+    admins = c.execute("SELECT * FROM users WHERE role='admin' AND openid<>? ORDER BY id",
+                       (UNCLAIMED_OPENID,)).fetchall()
+    return admins[0] if len(admins) == 1 else None
+
+
 def bootstrap_web_account():
     """网站账号体系首次上线：控制台设 WEB_BOOTSTRAP_USERNAME/PASSWORD(/OPENID) 后自动开通首个账号。
     仅在该用户尚无网站账号时创建，重复发版不会重置已设的密码。"""
@@ -88,14 +102,9 @@ def bootstrap_web_account():
     if not username or not password:
         return
     c = db.conn()
-    row = None
-    if openid:
-        row = c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()
-    else:
-        row = c.execute("SELECT * FROM users WHERE name=? AND role IN ('admin','manager')",
-                        (username,)).fetchone()
+    row = _find_bootstrap_user(c, openid, username)
     if not row:
-        print("[bootstrap] 未找到对应用户，跳过网站账号自举")
+        print("[bootstrap] 未找到对应用户（可用 WEB_BOOTSTRAP_OPENID 指定），跳过网站账号自举")
         return
     if row["web_username"]:
         print(f"[bootstrap] 用户已有网站账号 {row['web_username']}，跳过")
