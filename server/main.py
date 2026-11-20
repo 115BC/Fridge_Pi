@@ -63,6 +63,50 @@ AWAIT_SCAN_MINUTES = 5      # 打印标签后多久没扫码/输码就作废
 QUEUE_EXPIRE_HOURS = 24     # 满柜排队多久未完成自动过期
 
 
+def build_tag() -> str:
+    """线上版本标识：BUILD_TAG 环境变量优先，其次 Git 短 sha，最后退回启动时间戳。"""
+    tag = os.environ.get("BUILD_TAG")
+    if tag:
+        return tag
+    try:
+        import subprocess
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=BASE,
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        if sha:
+            return "git-" + sha
+    except Exception:
+        pass
+    return "boot-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def bootstrap_web_account():
+    """网站账号体系首次上线：控制台设 WEB_BOOTSTRAP_USERNAME/PASSWORD(/OPENID) 后自动开通首个账号。
+    仅在该用户尚无网站账号时创建，重复发版不会重置已设的密码。"""
+    username = (os.environ.get("WEB_BOOTSTRAP_USERNAME") or "").strip()
+    password = os.environ.get("WEB_BOOTSTRAP_PASSWORD") or ""
+    openid = (os.environ.get("WEB_BOOTSTRAP_OPENID") or "").strip()
+    if not username or not password:
+        return
+    c = db.conn()
+    row = None
+    if openid:
+        row = c.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()
+    else:
+        row = c.execute("SELECT * FROM users WHERE name=? AND role IN ('admin','manager')",
+                        (username,)).fetchone()
+    if not row:
+        print("[bootstrap] 未找到对应用户，跳过网站账号自举")
+        return
+    if row["web_username"]:
+        print(f"[bootstrap] 用户已有网站账号 {row['web_username']}，跳过")
+        return
+    c.execute("UPDATE users SET web_username=?, password_hash=?, must_change_password=1 WHERE id=?",
+              (username, hash_password(password), row["id"]))
+    db.log_event("web_account_bootstrap", "system",
+                 f"{row['name']} -> 网站账号 {username}")
+    print(f"[bootstrap] 已开通网站账号 {username}（用户 {row['name']}），首次登录须改密")
+
+
 def storage_days() -> int:
     try:
         return max(1, min(60, int(db.get_setting("storage_days", "6"))))
@@ -203,6 +247,7 @@ async def queue_expire_loop():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
+    bootstrap_web_account()
     tasks = [asyncio.create_task(batch_remind_loop()),
              asyncio.create_task(awaiting_scan_loop()),
              asyncio.create_task(queue_expire_loop())]
@@ -1942,7 +1987,7 @@ def admin_backup_rows(_: None = Depends(_pi_auth)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "build": "stored-2026-10-29-1",
+    return {"ok": True, "build": build_tag(),
             "backend": "mysql" if db.USING_MYSQL else "sqlite"}
 
 
