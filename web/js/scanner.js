@@ -1,16 +1,52 @@
-/* 扫码：优先 BarcodeDetector（需 HTTPS/localhost + 摄像头授权），不支持则弹框手动输码 */
+/* 扫码：安卓用 BarcodeDetector；iPhone Safari 用 jsQR 逐帧解二维码；无摄像头则手动输码。
+   摄像头要求安全上下文（HTTPS 或 localhost），HTTP 公网访问会直接落到手动输入。 */
 (function (w) {
   'use strict';
   const { toast, modal } = w.Core;
 
   async function pickCode(cb) {
-    if (w.BarcodeDetector) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        return openCameraModal(stream, cb);
-      } catch (e) { /* 授权失败或没有摄像头 → 手动输入 */ }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast('当前不是安全连接（需 HTTPS），无法调用摄像头，请手动输入');
+      return manual(cb);
     }
-    manual(cb);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    } catch (e) {
+      toast('摄像头不可用或未授权，请手动输入');
+      return manual(cb);
+    }
+    if (w.BarcodeDetector) {
+      return openCameraModal(stream, cb, detectorFn());
+    }
+    if (w.jsQR) {
+      return openCameraModal(stream, cb, jsqrFn());
+    }
+    stream.getTracks().forEach(t => t.stop());
+    toast('此浏览器不支持扫码识别，请手动输入');
+    return manual(cb);
+  }
+
+  function detectorFn() {
+    const d = new w.BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13'] });
+    return async video => {
+      const codes = await d.detect(video);
+      return codes && codes.length ? codes[0].rawValue : null;
+    };
+  }
+
+  function jsqrFn() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    return async video => {
+      if (!video.videoWidth) return null;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = w.jsQR(img.data, img.width, img.height);
+      return code && code.data ? code.data : null;
+    };
   }
 
   async function manual(cb) {
@@ -19,7 +55,7 @@
     if (v && v.trim()) cb(v.trim());
   }
 
-  function openCameraModal(stream, cb) {
+  function openCameraModal(stream, cb, decode) {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     mask.innerHTML = `<div class="modal">
@@ -35,12 +71,11 @@
     const stop = () => { if (stopped) return; stopped = true;
       try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
       clearInterval(timer); mask.remove(); };
-    const detector = new w.BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13'] });
     const timer = setInterval(async () => {
       if (stopped || video.readyState < 2) return;
       try {
-        const codes = await detector.detect(video);
-        if (codes && codes.length) { const raw = codes[0].rawValue; stop(); cb(raw); }
+        const raw = await decode(video);
+        if (raw) { stop(); cb(raw); }
       } catch (_) {}
     }, 350);
     mask.addEventListener('click', e => {

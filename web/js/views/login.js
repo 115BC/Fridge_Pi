@@ -8,7 +8,7 @@
       <div class="login-card">
         <div class="login-logo">❄</div>
         <h1>${esc(w.WEB_CONFIG.APP_TITLE)}</h1>
-        <p class="muted">内网网站 · 账号密码登录（与微信小程序同一账号）</p>
+        <p class="muted">校园邮箱注册 · 账号密码登录</p>
         <form id="loginForm">
           <label>网站账号</label>
           <input id="username" autocomplete="username" placeholder="如 张三-301" value="${esc(store.savedAccount)}" required>
