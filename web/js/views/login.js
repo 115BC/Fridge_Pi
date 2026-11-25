@@ -11,7 +11,7 @@
         <p class="muted">校园邮箱注册 · 账号密码登录</p>
         <form id="loginForm">
           <label>网站账号</label>
-          <input id="username" autocomplete="username" placeholder="如 张三-301" value="${esc(store.savedAccount)}" required>
+          <input id="username" autocomplete="username" placeholder="学号，如202410001000" value="${esc(store.savedAccount)}" required>
           <label>密码</label>
           <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
           <label class="checkbox"><input type="checkbox" id="remember" ${store.remember ? 'checked' : ''}> 记住账号</label>

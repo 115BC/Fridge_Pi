@@ -74,6 +74,56 @@ th { color: var(--muted); font-size: 12px; font-weight: 600; }
 tr:last-child td { border-bottom: 0; }
 .row-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 
+/* 表格容器：先给横向滚动兜底，避免长串（邮箱/openid）把整表撑出卡片 */
+.table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap table { min-width: 520px; }
+.table-wrap th, .table-wrap td { white-space: nowrap; }
+/* 长文本列允许换行，避免把表格顶宽（其余短字段保持单行，防中文一字一行） */
+.table-wrap td[data-label="物品/编码"], .table-wrap td[data-label="校园邮箱"] { white-space: normal; word-break: break-word; }
+
+/* ≤640px：表格转卡片，一人（一物）一卡，字段名由 data-label 前置 */
+@media (max-width: 640px) {
+  .table-wrap { overflow-x: visible; }
+  .table-wrap table { min-width: 0; }
+  .table-wrap thead { display: none; }
+  .table-wrap tbody, .table-wrap td { display: block; width: 100%; }
+  .table-wrap tr { display: flex; flex-direction: column; background: var(--card);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 12px; margin-bottom: 10px; }
+  .table-wrap tr:last-child { margin-bottom: 0; }
+  .table-wrap td { --k: 84px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px;
+    border: 0; padding: 3px 0; white-space: normal; word-break: break-word; }
+  .table-wrap td::before { content: attr(data-label); flex: 0 0 var(--k);
+    color: var(--muted); font-size: 12px; }
+  /* 第一格作为卡片标题：不显示字段名，字号加大并与正文用虚线分隔 */
+  .table-wrap td.t1 { order: -1; display: block; font-size: 15px; font-weight: 600;
+    padding: 0 0 7px; margin-bottom: 5px; border-bottom: 1px dashed var(--border); }
+  .table-wrap td.t1::before { display: none; }
+  .table-wrap td.t1 .muted { font-size: 12px; font-weight: 400; margin-top: 1px; }
+  .table-wrap td:not(.t1) > .muted { flex: 0 0 100%; padding-left: calc(var(--k) + 10px); }
+  .table-wrap td > .muted:empty { display: none; }   /* 学号为空时不占行 */
+  .table-wrap td .row-actions { flex: 1 1 auto; }
+}
+
+/* ≤640px：顶栏收成一行（品牌 | 导航 | 身份靠右），窄屏放不下时导航折到第二行；页签横向滑动不折行 */
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px; }
+  .brand { font-size: 15px; white-space: nowrap; }
+  .nav { flex: 1 1 auto; min-width: 0; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
+  .nav-item { white-space: nowrap; padding: 6px 10px; font-size: 13px; }
+  .who { margin-left: auto; gap: 6px; font-size: 12px; }
+  .who .badge { font-size: 11px; padding: 1px 6px; }
+  .who .btn-sm { padding: 3px 8px; font-size: 12px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  .tab { flex: 0 0 auto; white-space: nowrap; }
+}
+
+/* ≤340px：实在放不下时，让导航整行折到第二行，身份仍留在品牌右侧 */
+@media (max-width: 340px) {
+  .who { order: 2; }
+  .nav { order: 3; flex: 1 0 100%; }
+}
+
 /* 登录页 */
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(160deg, #eaf2ff, #f7f9fc); padding: 20px; }

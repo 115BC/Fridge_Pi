@@ -121,15 +121,15 @@
             <option value="name" ${S.sort === 'name' ? 'selected' : ''}>按名称</option>
           </select>
         </div>
-        ${S.items.length ? `<table><thead><tr><th>物品/编码</th><th>主人</th><th>状态</th><th>存放至/编号</th><th>体积</th><th>操作</th></tr></thead><tbody>
+        ${S.items.length ? `<div class="table-wrap"><table><thead><tr><th>物品/编码</th><th>主人</th><th>状态</th><th>存放至/编号</th><th>体积</th><th>操作</th></tr></thead><tbody>
           ${S.items.map(it => `<tr>
-            <td><b>${esc(it.name)}</b><div class="muted">${esc(it.code)} · ${esc(it.category || '')}</div></td>
-            <td>${esc(it.owner_name || '')} <div class="muted">${esc(it.owner_room || '')}</div></td>
-            <td><span class="badge badge-${it.color || 'green'}">${esc(it.color_label || STATUS[it.status] || it.status)}</span>
+            <td class="t1" data-label="物品/编码"><b>${esc(it.name)}</b><div class="muted">${esc(it.code)} · ${esc(it.category || '')}</div></td>
+            <td data-label="主人">${esc(it.owner_name || '')} <div class="muted">${esc(it.owner_room || '')}</div></td>
+            <td data-label="状态"><span class="badge badge-${it.color || 'green'}">${esc(it.color_label || STATUS[it.status] || it.status)}</span>
                 ${it.escalated ? '<span class="badge badge-red">超期未处理</span>' : ''}</td>
-            <td>${esc(it.expire_at || '-')}<div class="muted">编号 ${esc(it.batch_no || '-')} · ${esc(it.stored_at || '')}</div></td>
-            <td>${esc(it.volume_ml ? (it.volume_ml/1000).toFixed(1)+'L实测' : (it.vol_est_ml/1000).toFixed(1)+'L估')}</td>
-            <td><div class="row-actions">
+            <td data-label="存放至/编号">${esc(it.expire_at || '-')}<div class="muted">编号 ${esc(it.batch_no || '-')} · ${esc(it.stored_at || '')}</div></td>
+            <td data-label="体积">${esc(it.volume_ml ? (it.volume_ml/1000).toFixed(1)+'L实测' : (it.vol_est_ml/1000).toFixed(1)+'L估')}</td>
+            <td data-label="操作"><div class="row-actions">
               ${it.status === 'active' ? `<button class="btn btn-primary btn-sm" data-act="unlock" data-code="${esc(it.code)}">开锁</button>` : ''}
               <button class="btn btn-ghost btn-sm" data-act="rename" data-id="${it.id}" data-name="${esc(it.name)}">改名</button>
               <button class="btn btn-ghost btn-sm" data-act="volume" data-id="${it.id}" data-vol="${esc(it.volume_ml || '')}">体积</button>
@@ -140,7 +140,7 @@
               <button class="btn btn-success btn-sm" data-act="taken" data-id="${it.id}" data-name="${esc(it.name)}">已取出</button>
               <button class="btn btn-ghost btn-sm" data-act="notify" data-id="${it.id}" data-name="${esc(it.name)}">提醒本人</button>` : ''}
             </div></td></tr>`).join('')}
-        </tbody></table>` : '<div class="empty">该视图暂无物品</div>'}
+        </tbody></table></div>` : '<div class="empty">该视图暂无物品</div>'}
       </div>
       ${S.stock ? `<div class="card"><div class="card-title">盘点结果</div>
         <div class="muted">照片中二维码 ${S.stock.total_in_photo_qr} 个 · 找到 ${S.stock.found} · 缺失 ${S.stock.missing} · 未知 ${(S.stock.unknown_codes||[]).length}</div>
@@ -302,11 +302,11 @@
         <div class="muted">${S.buildings.map(b => `${esc(b.name)}→${esc(b.fridge_id)} <button class="btn btn-danger btn-sm" data-delb="${esc(b.name)}">删</button>`).join(' ')}</div></div>` : ''}
       <div class="card"><div class="card-title">学生列表（${S.users.length}）</div>
         <div class="toolbar"><input id="uQ" placeholder="搜索姓名/寝室" value="${esc(S.q)}"></div>
-        <table><thead><tr><th>姓名/寝室</th><th>楼宇</th><th>角色</th><th>额度</th><th>网站账号/学号</th><th>校园邮箱</th><th>操作</th></tr></thead><tbody>
-        ${S.users.map(u => `<tr><td><b>${esc(u.name)}</b><div class="muted">${esc(u.room)} · ${esc(u.openid)}</div></td>
-          <td>${esc(u.building || '未分楼')}</td><td>${ROLES[u.role] || u.role}</td><td>${esc(u.quota || 5)}</td>
-          <td>${esc(u.web_username || '-')}<div class="muted">${esc(u.student_id || '')}</div></td>
-          <td>${esc(u.email || '未绑定')}</td><td><div class="row-actions">
+        <div class="table-wrap"><table><thead><tr><th>姓名/寝室</th><th>楼宇</th><th>角色</th><th>额度</th><th>网站账号/学号</th><th>校园邮箱</th><th>操作</th></tr></thead><tbody>
+        ${S.users.map(u => `<tr><td class="t1" data-label="姓名/寝室"><b>${esc(u.name)}</b><div class="muted">${esc(u.room)} · ${esc(u.openid)}</div></td>
+          <td data-label="楼宇">${esc(u.building || '未分楼')}</td><td data-label="角色">${ROLES[u.role] || u.role}</td><td data-label="额度">${esc(u.quota || 5)}</td>
+          <td data-label="网站账号/学号">${esc(u.web_username || '-')}<div class="muted">${esc(u.student_id || '')}</div></td>
+          <td data-label="校园邮箱">${esc(u.email || '未绑定')}</td><td data-label="操作"><div class="row-actions">
             <button class="btn btn-ghost btn-sm" data-act="profile" data-id="${u.id}" data-name="${esc(u.name)}" data-room="${esc(u.room)}">改资料</button>
             ${isA ? `<button class="btn btn-ghost btn-sm" data-act="building" data-id="${u.id}" data-building="${esc(u.building)}">改楼</button>
             <button class="btn btn-ghost btn-sm" data-act="role" data-id="${u.id}" data-role="${u.role}">改角色</button>` : ''}
@@ -315,7 +315,7 @@
             <button class="btn btn-ghost btn-sm" data-act="editall" data-id="${u.id}">改全部</button>
             <button class="btn btn-ghost btn-sm" data-act="mailreset" data-id="${u.id}" data-name="${esc(u.name)}">邮件重置密码</button>` : ''}
           </div></td></tr>`).join('')}
-        </tbody></table></div>`;
+        </tbody></table></div></div>`;
     bindStudents(box);
   }
   function editAllUser(id, box) {
@@ -421,10 +421,10 @@
     try { S.logs = (await get('/api/v1/unlock_logs?limit=100')).logs || []; }
     catch (e) { box.innerHTML = `<div class="card">加载失败：${esc(e.message)}</div>`; return; }
     box.innerHTML = `<div class="card"><div class="card-title">开锁记录（最近 100）</div>
-      ${S.logs.length ? `<table><thead><tr><th>时间</th><th>物品/编码</th><th>发起人</th><th>结果</th></tr></thead><tbody>
-      ${S.logs.map(l => `<tr><td>${esc(l.created_at || '')}</td><td>${esc(l.item_name || '')} ${esc(l.code || '')}</td>
-        <td>${esc(l.actor_name || l.actor || '')}</td><td>${esc(l.status || l.result || '')}</td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">暂无开锁记录</div>'}</div>`;
+      ${S.logs.length ? `<div class="table-wrap"><table><thead><tr><th>时间</th><th>物品/编码</th><th>发起人</th><th>结果</th></tr></thead><tbody>
+      ${S.logs.map(l => `<tr><td data-label="时间">${esc(l.created_at || '')}</td><td class="t1" data-label="物品/编码">${esc(l.item_name || '')} ${esc(l.code || '')}</td>
+        <td data-label="发起人">${esc(l.actor_name || l.actor || '')}</td><td data-label="结果">${esc(l.status || l.result || '')}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">暂无开锁记录</div>'}</div>`;
   }
 
   // ---------- 排队与呼叫 ----------
@@ -445,9 +445,9 @@
       </div>
       <div class="card"><div class="hd"><div class="card-title" style="margin:0">排队（${S.queue.length}）</div>
         <button class="btn btn-ghost btn-sm" id="btnNotifyQueue">通知排队学生</button></div>
-        ${S.queue.length ? `<table><thead><tr><th>位次</th><th>学生</th><th>时间</th><th>状态</th></tr></thead><tbody>
-          ${S.queue.map(q => `<tr><td>${esc(q.position)}</td><td>${esc(q.name || '')} ${esc(q.room || '')}</td>
-            <td>${esc(q.created_at || '')}</td><td>${esc(q.status || '')}</td></tr>`).join('')}</tbody></table>`
+        ${S.queue.length ? `<div class="table-wrap"><table><thead><tr><th>位次</th><th>学生</th><th>时间</th><th>状态</th></tr></thead><tbody>
+          ${S.queue.map(q => `<tr><td data-label="位次">${esc(q.position)}</td><td class="t1" data-label="学生">${esc(q.name || '')} ${esc(q.room || '')}</td>
+            <td data-label="时间">${esc(q.created_at || '')}</td><td data-label="状态">${esc(q.status || '')}</td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty">暂无排队</div>'}</div>
       <div class="card"><div class="card-title">匿名呼叫（${S.calls.length}）</div>
         ${S.calls.length ? S.calls.map(c => `<div class="kv"><div class="li-name">${esc(c.kind_label || c.kind)}
