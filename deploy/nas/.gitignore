@@ -1,0 +1,7 @@
+app.env
+frpc.toml
+frpc.token
+data/
+backups/
+tls/
+frpc-logs/

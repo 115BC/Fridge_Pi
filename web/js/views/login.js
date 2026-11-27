@@ -38,6 +38,8 @@
         store.token = r.token; store.role = r.role; store.user = r.user;
         store.remember = remember; store.savedAccount = remember ? username : '';
         if (r.must_change_password) await forceChangePassword(password);
+        const pending = sessionStorage.getItem('fridge_kiosk_ticket');
+        if (pending) { location.href = 'kiosk-login.html?ticket=' + encodeURIComponent(pending); return; }
         w.App.goHome();
       } catch (err) {
         toast(err.message);

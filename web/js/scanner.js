@@ -16,23 +16,47 @@
       toast('摄像头不可用或未授权，请手动输入');
       return manual(cb);
     }
-    if (w.BarcodeDetector) {
-      return openCameraModal(stream, cb, detectorFn());
-    }
-    if (w.jsQR) {
-      return openCameraModal(stream, cb, jsqrFn());
+    const decode = await combinedFn();
+    if (decode) {
+      return openCameraModal(stream, cb, decode);
     }
     stream.getTracks().forEach(t => t.stop());
     toast('此浏览器不支持扫码识别，请手动输入');
     return manual(cb);
   }
 
-  function detectorFn() {
-    const d = new w.BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13'] });
+  async function combinedFn() {
+    const barcode = await detectorFn();
+    const jsqr = w.jsQR ? jsqrFn() : null;
+    if (!barcode && !jsqr) return null;
     return async video => {
-      const codes = await d.detect(video);
-      return codes && codes.length ? codes[0].rawValue : null;
+      if (barcode) {
+        try {
+          const raw = await barcode(video);
+          if (raw) return raw;
+        } catch (_) {}
+      }
+      if (jsqr) {
+        try {
+          const raw = await jsqr(video);
+          if (raw) return raw;
+        } catch (_) {}
+      }
+      return null;
     };
+  }
+
+  async function detectorFn() {
+    if (!w.BarcodeDetector) return null;
+    try {
+      const d = new w.BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13'] });
+      return async video => {
+        const codes = await d.detect(video);
+        return codes && codes.length ? codes[0].rawValue : null;
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   function jsqrFn() {

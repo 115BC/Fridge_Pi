@@ -161,8 +161,9 @@
     if (s) s.onchange = () => { S.sort = s.value; loadItems(box); };
     const on = (id, fn) => { const el = box.querySelector('#' + id); if (el) el.onclick = fn; };
     on('btnScanLogin', () => w.Scanner.pickCode(code => {
-      const m = (code || '').match(/fridge-login:([0-9a-zA-Z]+)/);
-      if (!m) return toast('这不是屏幕登录码');
+      const raw = (code || '').trim();
+      const m = raw.match(/^(?:fridge-login:?\s*)?([0-9a-fA-F]{32})$/) || raw.match(/[?&]ticket=([0-9a-fA-F]{32})/);
+      if (!m) return toast('这不是屏幕登录码：' + String(code || '').slice(0, 60));
       post('/api/v1/kiosk/login/confirm', { ticket: m[1] }).then(() => toast('已登录屏幕，可在屏幕上登记'))
         .catch(e => toast('登录失败：' + e.message));
     }));

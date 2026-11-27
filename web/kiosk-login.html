@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>冰箱屏幕登录确认</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-logo">❄</div>
+      <h1>冰箱屏幕登录确认</h1>
+      <p class="muted" id="status">正在确认…</p>
+      <button class="btn btn-ghost btn-block" id="backHome" hidden>返回首页</button>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="config.js"></script>
+  <script src="js/core.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const { store, post, toast } = window.Core;
+      const status = document.getElementById('status');
+      const backHome = document.getElementById('backHome');
+      const ticket = new URLSearchParams(location.search).get('ticket') || '';
+
+      backHome.onclick = () => { location.href = './index.html'; };
+
+      if (!/^[0-9a-fA-F]{32}$/.test(ticket)) {
+        status.textContent = '登录码无效，请重新扫描屏幕二维码';
+        backHome.hidden = false;
+        return;
+      }
+
+      if (!store.token) {
+        sessionStorage.setItem('fridge_kiosk_ticket', ticket);
+        status.textContent = '请先登录或注册，完成后会自动确认';
+        setTimeout(() => { location.replace('./index.html'); }, 300);
+        return;
+      }
+
+      post('/api/v1/kiosk/login/confirm', { ticket })
+        .then(() => {
+          sessionStorage.removeItem('fridge_kiosk_ticket');
+          status.textContent = '已确认冰箱屏幕登录，请回到屏幕继续登记';
+          backHome.hidden = false;
+        })
+        .catch(e => {
+          if (String(e.message).includes('登录已过期')) {
+            sessionStorage.setItem('fridge_kiosk_ticket', ticket);
+            location.replace('./index.html');
+            return;
+          }
+          toast(e.message);
+          status.textContent = '确认失败：' + e.message;
+          backHome.hidden = false;
+        });
+    })();
+  </script>
+</body>
+</html>

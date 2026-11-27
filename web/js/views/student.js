@@ -97,8 +97,9 @@
       }
     });
     $('btnScanLogin') && ($('btnScanLogin').onclick = () => w.Scanner.pickCode(code => {
-      const m = (code || '').match(/fridge-login:([0-9a-zA-Z]+)/);
-      if (!m) return toast('这不是屏幕登录码');
+      const raw = (code || '').trim();
+      const m = raw.match(/^(?:fridge-login:?\s*)?([0-9a-fA-F]{32})$/) || raw.match(/[?&]ticket=([0-9a-fA-F]{32})/);
+      if (!m) return toast('这不是屏幕登录码：' + String(code || '').slice(0, 60));
       post('/api/v1/kiosk/login/confirm', { ticket: m[1] })
         .then(() => { toast('已登录冰箱屏幕，请在屏幕上继续'); load(); })
         .catch(e => toast('登录失败：' + e.message));

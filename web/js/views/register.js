@@ -55,7 +55,10 @@
           password: $('rPw').value
         }, false);
         w.Core.store.token = r.token; w.Core.store.role = r.role; w.Core.store.user = r.user;
-        toast('注册成功'); w.App.goHome();
+        toast('注册成功');
+        const pending = sessionStorage.getItem('fridge_kiosk_ticket');
+        if (pending) { location.href = 'kiosk-login.html?ticket=' + encodeURIComponent(pending); return; }
+        w.App.goHome();
       } catch (err) { toast(err.message); }
       finally { btn.disabled = false; btn.textContent = '注 册'; }
     };

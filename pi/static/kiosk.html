@@ -99,8 +99,9 @@
     <div style="width:74px"></div>
   </div>
   <div class="card" style="text-align:center">
-    <div class="guess">打开<b style="color:#1677ff">微信小程序</b> → 我的冰箱页「扫屏幕登录码」对准下方二维码</div>
+    <div class="guess">用手机直接扫描二维码，登录后即可在屏幕登记</div>
     <img id="loginQr" style="width:300px;height:300px;background:#fff" alt="登录二维码">
+    <div class="guess" id="loginTicketText" style="font-size:12px;word-break:break-all;margin-top:4px"></div>
     <div class="msg" id="loginMsg">等待扫码确认…</div>
     <button class="big grey" onclick="startLogin()">看不清？刷新登录码</button>
   </div>
@@ -358,7 +359,8 @@ async function startLogin() {
     const d = await post("/api/login_start");
     loginTicket = d.ticket;
     document.getElementById("loginQr").src = d.qr_url;
-    setMsg("loginMsg", "请在微信小程序「我的冰箱」页点「扫屏幕登录码」对准本屏", true);
+    document.getElementById("loginTicketText").textContent = "手动码：" + d.ticket;
+    setMsg("loginMsg", "请用手机扫码，登录后自动确认", true);
     loginPoll = setInterval(pollLogin, 1000);
   } catch (e) { setMsg("loginMsg", "登录服务不可用：" + e.message, false); }
 }

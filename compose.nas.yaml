@@ -1,0 +1,56 @@
+name: fridge
+
+services:
+  server:
+    build:
+      context: ./server
+    image: fridge-server:local
+    container_name: fridge-server
+    network_mode: host
+    env_file:
+      - ./deploy/nas/app.env
+    environment:
+      FRIDGE_DATA_DIR: /data
+      ALLOW_DB_TRANSFER: ""
+      PRINT_PI_LOCAL: ""
+    volumes:
+      - ./deploy/nas/data:/data
+      - ./deploy/nas/backups:/backups
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8001"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    image: nginx:1.27-alpine
+    container_name: fridge-web
+    network_mode: host
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./deploy/nas/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nas/tls:/etc/nginx/tls:ro
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:9443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frpc:
+    image: snowdreamtech/frpc:0.72.0-alpine
+    container_name: fridge-frpc
+    profiles: ["cutover"]
+    network_mode: host
+    volumes:
+      - ./deploy/nas/frpc.toml:/etc/frp/frpc.toml:ro
+      - ./deploy/nas/frpc-logs:/var/log/frpc
+    command: ["-c", "/etc/frp/frpc.toml"]
+    restart: unless-stopped

@@ -30,6 +30,14 @@ class Camera:
             print("[camera] 未找到 USB/rpicam 摄像头，使用模拟图片")
 
     @staticmethod
+    def _node_is_usb(idx: int) -> bool:
+        node = Path(f"/sys/class/video4linux/video{idx}")
+        try:
+            return "/usb" in os.path.realpath(str(node / "device"))
+        except OSError:
+            return False
+
+    @staticmethod
     def _find_usb():
         """只认挂在 USB 总线上的 video 节点，避免打开 bcm2835 ISP/codec 节点；grab 一次确认能出帧。"""
         try:
@@ -51,10 +59,25 @@ class Camera:
 
     def _open_locked(self):
         import cv2
+        if self.usb_index is None or not self._node_is_usb(self.usb_index):
+            idx = self._find_usb()
+            if idx is None:
+                return False
+            if idx != self.usb_index:
+                self.usb_index = idx
+                print(f"[camera] USB 节点变更 -> /dev/video{idx}")
         cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
         if not cap.isOpened():
             cap.release()
-            return False
+            idx = self._find_usb()
+            if idx is None or idx == self.usb_index:
+                return False
+            self.usb_index = idx
+            print(f"[camera] USB 节点变更 -> /dev/video{idx}")
+            cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap.release()
+                return False
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, USB_SIZE[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, USB_SIZE[1])
@@ -95,6 +118,16 @@ class Camera:
         data = None
         for _ in range(4 if fresh else 1):   # 新开设备先丢几帧，等自动曝光/对焦稳定
             data = self.read_jpeg(92) or data
+        if data is None:
+            self.close_stream()
+            idx = self._find_usb()
+            if idx is not None:
+                if idx != self.usb_index:
+                    self.usb_index = idx
+                    print(f"[camera] USB 节点变更 -> /dev/video{idx}")
+                if self.open_stream():
+                    for _ in range(4):
+                        data = self.read_jpeg(92) or data
         if data is None:
             raise RuntimeError("USB 摄像头取帧失败")
         out.write_bytes(data)

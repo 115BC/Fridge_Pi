@@ -44,6 +44,7 @@ for _sec, _key, _env in [("security", "jwt_secret", "JWT_SECRET"),
         CFG[_sec][_key] = os.environ[_env]
 if os.environ.get("PRINT_PI_LOCAL") is not None:
     CFG["print"]["pi_local_api"] = os.environ["PRINT_PI_LOCAL"]
+PUBLIC_SITE_URL = os.environ.get("PUBLIC_SITE_URL", "").rstrip("/")
 ALLOW_DB_TRANSFER = bool(os.environ.get("ALLOW_DB_TRANSFER"))
 
 auth = Auth(CFG["security"]["jwt_secret"])
@@ -1372,7 +1373,7 @@ def _pi_auth(x_pi_secret: Optional[str] = Header(None)):
 
 # ---------- 触控屏扫码登录（一次性 ticket，小程序扫码确认）----------
 LOGIN_TICKETS: dict[str, dict] = {}
-LOGIN_PENDING_TTL = 120      # 出码后未扫码的有效期（秒）
+LOGIN_PENDING_TTL = 300      # 出码后未扫码的有效期（秒）；扫码直达链接需要留出登录/注册时间
 LOGIN_SESSION_TTL = 600      # 确认后屏幕会话有效期（秒）
 
 
@@ -1387,14 +1388,17 @@ def _ticket_user(ticket: str) -> Optional[dict]:
 
 
 @app.post("/api/v1/kiosk/login/start")
-def login_start(_: None = Depends(_pi_auth)):
+def login_start(request: Request, _: None = Depends(_pi_auth)):
     ticket = uuid.uuid4().hex
     now = time.time()
     for k in [k for k, v in LOGIN_TICKETS.items() if now - v["created"] > LOGIN_SESSION_TTL * 2]:
         LOGIN_TICKETS.pop(k, None)
+    site = PUBLIC_SITE_URL or str(request.base_url).rstrip("/")
+    qr_text = f"{site}/kiosk-login.html?ticket={ticket}"
     LOGIN_TICKETS[ticket] = {"status": "pending", "user": None,
-                             "created": now, "confirmed_at": 0.0}
-    return {"ticket": ticket, "qr_text": f"fridge-login:{ticket}",
+                             "created": now, "confirmed_at": 0.0,
+                             "qr_text": qr_text}
+    return {"ticket": ticket, "qr_text": qr_text,
             "expires_in": LOGIN_PENDING_TTL}
 
 
@@ -1406,7 +1410,7 @@ def login_qr(ticket: str):
     if ticket not in LOGIN_TICKETS:
         raise HTTPException(404, "登录码不存在")
     q = QRCode(box_size=10, border=2)
-    q.add_data(f"fridge-login:{ticket}")
+    q.add_data(LOGIN_TICKETS[ticket].get("qr_text") or f"fridge-login:{ticket}")
     buf = io.BytesIO()
     q.make_image(fill_color="#101820", back_color="white").save(buf, "PNG")
     return Response(buf.getvalue(), media_type="image/png")

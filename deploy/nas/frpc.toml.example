@@ -1,0 +1,24 @@
+serverAddr = "39.106.58.14"
+serverPort = 7000
+loginFailExit = false
+
+auth.method = "token"
+auth.token = "替换为阿里云 frps.toml 中的 auth.token"
+
+transport.protocol = "tcp"
+transport.tcpMux = true
+transport.tcpMuxKeepaliveInterval = 30
+
+log.to = "/app/logs/frpc.log"
+log.level = "info"
+log.maxDays = 7
+
+[[proxies]]
+name = "fridge-https"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 9443
+remotePort = 9443
+
+transport.useEncryption = true
+transport.useCompression = false
